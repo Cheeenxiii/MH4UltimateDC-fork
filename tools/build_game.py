@@ -48,6 +48,7 @@ import code_mods  # noqa: E402
 import codebin2elf  # noqa: E402
 import exheader as exh  # noqa: E402
 import extract_ncch  # noqa: E402
+import mod_hooks  # noqa: E402
 import mods  # noqa: E402
 import recompile  # noqa: E402
 import version_map  # noqa: E402
@@ -312,6 +313,29 @@ def translate_tables(version: dict, entries: dict, hooks: dict, tunables: dict) 
     return entries, hooks, tunables
 
 
+def mod_plugins(mods_dir: str, program_id: int, hooks: dict, android: bool = False) -> tuple[dict, list]:
+    """The hook points with the enabled mods' hooks added, and their native plugins for this
+    platform (tools/mod_hooks.py). Conflicting hooks stop the build."""
+    try:
+        mods.set_game(program_id)
+    except mods.Error:
+        return hooks, []                 # not MH4U: no mod library applies
+    wanted = mod_hooks.enabled_mods(mods_dir)
+    if not wanted:
+        return hooks, []
+    try:
+        hooks, lines = mod_hooks.merge(hooks, wanted, mod_hooks.known_names())
+    except mod_hooks.HookError as e:
+        raise SystemExit(f"the enabled mods' hooks conflict (docs/MODS.md, Native plugins):\n{e}")
+    print("mods' hooks:")
+    for line in lines:
+        print(f"  {line}")
+    plugins, warnings = mod_hooks.plugin_entries(wanted, "android" if android else mod_hooks.platform_key())
+    for w in warnings:
+        print(f"  warning: {w}")
+    return hooks, plugins
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dump", required=True, help="decrypted .cia / .3ds / .cci / .cxi of your own copy")
@@ -385,6 +409,13 @@ def main(argv=None) -> int:
                       "Azahar's mods folder (build again after adding, changing or removing it)")
             code = modded
 
+    # the enabled mods' hooks join the hook points, and their native plugins are listed next to
+    # the library (tools/mod_hooks.py, docs/MODS.md "Native plugins")
+    hooks = recompile.load_hooks(args.hooks)
+    plugins = []
+    if mods_dir:
+        hooks, plugins = mod_plugins(mods_dir, program_id, hooks, args.android)
+
     out = os.path.join(args.out, "recomp")
     print("recompiling (a couple of minutes)")
     size = recompile.code_size(header, code)
@@ -394,7 +425,7 @@ def main(argv=None) -> int:
     img = Image(code, header.text.address, size)
     entries, hooks, tunables = translate_tables(
         version or {}, recompile.load_entries(args.functions, [args.extra] if args.extra else []),
-        recompile.load_hooks(args.hooks), recompile.load_tunables(args.tunables))
+        hooks, recompile.load_tunables(args.tunables))
     segs = [(header.ro.address, header.ro.size), (header.data.address, header.data.size)]
     res = recompile.recompile(img, entries, out, data_segments=segs, title_id=program_id,
                               hooks=hooks, tunables=tunables, log=lambda m: print(m, flush=True))
@@ -417,6 +448,7 @@ def main(argv=None) -> int:
     lib = rbuild.build(out, args.jobs, args.opt, ["RC_PAGED"], os.path.join("android", name) if args.android else name,
                        [rbuild.DLL_GLUE], cc=cc, extra_flags=["-fvisibility=hidden"], android=args.android)
     print(f"code library: {lib}")
+    listed = mod_hooks.write_plugin_list(lib, plugins)
     if args.android and not args.install:
         print(f"next: copy it to your device, into Azahar's user folder as recomp/{name} "
               "(docs/PLAYING.md, Android)")
@@ -424,10 +456,13 @@ def main(argv=None) -> int:
         dest_dir = os.path.join(args.install, "recomp")
         os.makedirs(dest_dir, exist_ok=True)
         install_library(lib, os.path.join(dest_dir, name))
+        mod_hooks.write_plugin_list(os.path.join(dest_dir, name), plugins)
         # what it was built from, for tools/mods.py status (docs/MODS.md)
         mods.write_build_record(os.path.join(dest_dir, name), used, header.text.size, changes_code, program_id,
                                 code_size=size)
         print(f"installed to {os.path.join(dest_dir, name)}")
+    if listed:
+        print(f"native plugins: {len(plugins)}, listed in {os.path.basename(listed)} next to the library")
     return 0
 
 
