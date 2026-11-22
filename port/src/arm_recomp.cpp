@@ -15,6 +15,7 @@
 #include "core/memory.h"
 #include "fiber.h"
 #include "hooks.h"
+#include "plugins.h"
 
 #include "common/dynamic_library.h"
 
@@ -181,8 +182,12 @@ bool ARM_Recomp::LoadCode(const std::string& path, std::string& error) {
     g_call_counts = library->GetSymbol<RCallCounts>("rc_call_counts");
     g_library = std::move(library);
     SetCode(info);
-    for (const auto& line : Hooks::Install(info)) {
+    // the port's hooks and the mods' native plugins share the hook points (plugins.h)
+    for (const auto& line : Hooks::Install(Plugins::Begin(info))) {
         LOG_INFO(Core_ARM11, "hooks: {}", line);
+    }
+    for (const auto& line : Plugins::Load(path)) {
+        LOG_INFO(Core_ARM11, "plugins: {}", line);
     }
     return true;
 }
