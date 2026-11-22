@@ -181,6 +181,33 @@ My Mod 1.0.zip
 
 Make code patches for the code of the game they are for, the USA v1.3.0 update's `code.bin` or the European v1.1.0 update's (the code the port recompiles), say which with the game's title folder or `region`, and say in the description whether they change code or only data.
 
+## Native plugins
+
+A mod can also hook the game's functions with native code: one library per platform (`.dll`, `.so`, `.dylib`), loaded by the port with the game's code library. It is built against [`include/mh4u_plugin.h`](../include/mh4u_plugin.h), the plugin API, and exports `mod.json`'s side of it:
+
+```json
+{
+  "name": "My Plugin Mod",
+  "hooks": ["sMhPad::update", {"name": "uMyFind::run", "address": "0x00123456"}],
+  "plugin": {"windows": "bin/my_mod.dll", "linux": "bin/my_mod.so", "macos": "bin/my_mod.dylib"},
+  "config": {"speed": 2}
+}
+```
+
+- **`hooks`** lists the game functions the plugin wraps, **by name**, so that the same mod works with every version the port runs. A name is one of the project's (`config/hooks.txt`, `config/symbols.txt`, the names in `config/functions.tsv`); a function the project hasn't named is given with its USA v1.3.0 address, which the build moves to the other version's like the project's own hook points. `build_game.py` adds the enabled mods' hooks to the hook points it recompiles with and prints them. Two mods putting one name at different addresses, or giving one function two names, stop the build with both named. Two mods hooking the same function is fine.
+- **`plugin`** names the library for each platform (`windows`, `linux`, `macos`, `android`), a path in the mod. A mod with a plugin and no game files is a valid mod.
+- **`config`** holds the plugin's default settings; the player's `config.ini` in the mod's folder in the library (`key = value` lines) overrides them. The plugin reads them with `host->config`.
+
+`build_game.py` (with the mods of `--install` or `--mods`) lists the enabled mods' plugins for this platform in `recomp/<program id>.plugins.tsv` next to the code library, in mod order, with their settings. The port reads that list when it loads the library, and loads each plugin in order: a plugin that can't be loaded, lacks `mh4u_plugin_init`, or returns 0 from it (built for a newer port, say) is turned off for this run with a line in the log, and whatever it hooked is taken back. Build the library again after turning a plugin mod on or off, or after changing its `hooks` or `config.ini`, as for a code mod that changes code.
+
+**Order.** Several mods and the port itself can hook one function: they run in a chain. The last mod in the mod order runs first (later mods win, as for files), then the earlier ones, then the port's own hook, then the game's function. Each hook calls `call_original` to run the rest of the chain, or `skip_original` to return to the game's caller.
+
+**What a plugin can do** (the host table, `MH4UPluginHost`): hook a function by name and call the original; read and write the guest's registers and memory; turn a guest address into a host pointer for a span of memory; log; read its mod's settings; be called once per frame (at `sMhMain::frame`). It never sees the recompiler's own structures, so the port can change them without breaking plugins; `MH4U_PLUGIN_ABI` and the table's `size` say what a host offers.
+
+**Safety.** A native plugin is arbitrary code running on your PC with your permissions, unlike a texture pack or a patch of the game's code. Install plugins only from authors you trust. (Still to do: the launcher's Mods screen should warn before turning one on, and catalog entries with a plugin should say so.)
+
+[`tools/plugin_sample/sample_plugin.c`](../tools/plugin_sample/sample_plugin.c) is a complete small plugin (`cc -shared -fPIC -Iinclude tools/plugin_sample/sample_plugin.c -o sample_plugin.so`); `python3 tools/mod_hooks.py` shows what the enabled mods hook and any conflict. The plugin host is `port/src/plugin_host.h`, tested on recompiled test code in `tests/test_plugin_host.py`.
+
 ## For the launcher (`--json`)
 
 With `--json` (before or after the command) each command prints one JSON object: `"ok": true` and `"command"` with the result, or `"ok": false` and `"error": {"code", "message", ...}` (exit status 1; 2 for a usage error). `list`, `add`, `remove`, `enable`, `disable` and `order` return the library: `mods` (in order; each with `id`, `name`, `version`, `author`, `description`, `url`, `catalog`, `region` (its `mod.json`'s), `fits` (false: made for the other region's game, left out of this one's mods folder), `position`, `enabled`, `new`, `layout`, `contains`, `files`, `code`, `wins`, `loses`, `path`, `warnings`, `errors`), `conflict_count`, `deploy_state` (`up_to_date`, `out_of_date` or `blocked`), `problems`, `warnings` and, for the commands that change it, `messages`. `conflicts` returns `conflicts` (`path`, `mods`, `winner`, `files`); `deploy`, `undeploy` and `status` return `deploy` (`state`, `add`, `update`, `remove`, `in_the_way`, `changed`, `foreign`, `problems`) and `code_library` (`state`, `reason`, `code_files`, `changes_code`, `adds_code`). `catalog` returns `catalog` (`source`: `bundled`, `cache`, `remote` or `file`; `updated`), `entries` (the fields above, plus `direct`, `installed` (`as`, `id`, `version`, `enabled`, `files`, or null), `update`, `downloaded` and `fits`, whether it is for the game: false for a mod made for the other region's), `textures` (the texture packs installed for the game), `textures_folder` and `downloads_folder`. `install-from-catalog` and `install` return a texture pack's `pack`, `files`, `replaced`, or a mod's library as `add` does, with `messages` and the entry's `needs`. Before their result, these two (and `add`) print **progress lines**, each `@` and one JSON object: `{"event": "step"|"download"|"unpack"|"install", "message": ...}` when a stage starts, then `{"event", "done", "total", "what"}` a few times a second (`total` null when not known); the launcher reads the last one for its progress bar and leaves them out of the result. Error codes include `not_found`, `exists`, `layout`, `zip`, `archive`, `code_mod_conflict`, `foreign_files`, `conflict`, `download`, `checksum`, `space`, `manual_extract` (with `download`, `target`, `page_url`), `page_only`, `other_title`, `other_region` (a catalog mod made for the other region's game, with its `region` and the `game`'s) and `io`.

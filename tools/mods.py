@@ -316,7 +316,7 @@ class Mod:
     enabled: bool = False
     new: bool = False       # a folder put in the library by hand, not in its order yet
     manifest: dict = field(default_factory=dict)
-    layout: str | None = None     # "azahar", "title" (a title id or luma folder), "romfs"
+    layout: str | None = None     # "azahar", "title" (a title id or luma folder), "romfs", "plugin" (none: a native plugin only)
     root: str | None = None       # the folder with that layout
     files: list[ModFile] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -547,7 +547,61 @@ def read_manifest(path: str) -> tuple[dict, list[str]]:
             out["root"] = root
         else:
             warnings.append(f"{MANIFEST}: root should be a folder's path; ignored")
+    _read_plugin_fields(data, out, warnings)
     return out, warnings
+
+
+PLUGIN_PLATFORMS = ("windows", "linux", "macos", "android")
+
+
+def _read_plugin_fields(data: dict, out: dict, warnings: list[str]) -> None:
+    """mod.json's native plugin fields (docs/MODS.md, "Native plugins"): hooks (game functions
+    by name, or {"name", "address"} with the USA v1.3.0 address for one the project hasn't
+    named), plugin (the library per platform, a path in the mod) and config (the plugin's
+    default settings, text)."""
+    hooks = data.get("hooks")
+    if hooks is not None:
+        good, ok = [], isinstance(hooks, list)
+        for h in hooks if ok else []:
+            if isinstance(h, str) and h.strip():
+                good.append({"name": h.strip()})
+            elif isinstance(h, dict) and isinstance(h.get("name"), str) and h["name"].strip():
+                entry = {"name": h["name"].strip()}
+                addr = h.get("address")
+                if isinstance(addr, str):
+                    try:
+                        addr = int(addr, 16)
+                    except ValueError:
+                        addr = None
+                if isinstance(addr, int) and not isinstance(addr, bool) and 0 <= addr < 1 << 32:
+                    entry["address"] = addr
+                elif "address" in h:
+                    ok = False
+                    continue
+                good.append(entry)
+            else:
+                ok = False
+        if not ok:
+            warnings.append(f"{MANIFEST}: hooks should list function names, or {{\"name\", \"address\"}} "
+                            "objects with a hexadecimal USA v1.3.0 address; the others are ignored")
+        if good:
+            out["hooks"] = good
+    plugin = data.get("plugin")
+    if plugin is not None:
+        if isinstance(plugin, dict) and plugin and all(
+                k in PLUGIN_PLATFORMS and isinstance(v, str) and v for k, v in plugin.items()):
+            out["plugin"] = dict(plugin)
+        else:
+            warnings.append(f"{MANIFEST}: plugin should map some of {', '.join(PLUGIN_PLATFORMS)} to the "
+                            "library's path in the mod; ignored")
+    config = data.get("config")
+    if config is not None:
+        if isinstance(config, dict) and all(isinstance(k, str) and "\t" not in k and "\n" not in k
+                                            for k in config):
+            out["config"] = {k: (("1" if v else "0") if isinstance(v, bool) else str(v))
+                             for k, v in config.items() if isinstance(v, (str, int, float, bool))}
+        else:
+            warnings.append(f"{MANIFEST}: config should be an object of settings; ignored")
 
 
 def scan(path: str, mid: str, adding: bool = False) -> Mod:
@@ -611,6 +665,9 @@ def _read_mod(path: str, mid: str, adding: bool = False) -> Mod:
     try:
         mod.layout, mod.root, chain, notes = detect(base)
     except Error as e:
+        if e.code == "layout" and "plugin" in mod.manifest:
+            mod.layout, mod.root = "plugin", base      # a native plugin and no game files
+            return mod
         if e.code != "other_title" or adding:
             mod.errors.append(e.message)
             return mod
@@ -644,7 +701,7 @@ def _read_mod(path: str, mid: str, adding: bool = False) -> Mod:
             mod.errors.append(f"{seen[key]} and {f.dest} are the same file on Windows and macOS "
                               "(the names differ only in capital letters)")
         seen.setdefault(key, f.dest)
-    if not mod.files and not mod.errors:
+    if not mod.files and not mod.errors and "plugin" not in mod.manifest:
         mod.errors.append("no files that Azahar uses " + (f"({'; '.join(mod.warnings)})" if mod.warnings else
                                                           "(romfs/, romfs_ext/, exefs/, code.ips, ...)"))
     declared = mod.manifest.get("contains")
