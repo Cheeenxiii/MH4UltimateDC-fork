@@ -233,6 +233,64 @@ def test_vector_mode_and_multi_return_helpers(tmp_path):
     assert verdicts[mc][2] == 48
 
 
+# RVCT's Thumb switch helper (ARM code, as in MHXX): the Thumb caller does `blx helper` with
+# the case index in r3 and a byte table after the call (case count, then one entry per case
+# and a default); the helper jumps to the chosen case and never returns to LR.
+SWITCH8 = r"""
+    .syntax unified
+    .arm
+    .text
+    .global switch8
+    .type switch8, %function
+switch8:
+    ldrb    ip, [lr, #-1]
+    cmp     r3, ip
+    ldrbhs  r3, [lr, ip]
+    ldrblo  r3, [lr, r3]
+    add     ip, lr, r3, lsl #1
+    bx      ip
+
+    .thumb
+    .global sw_caller
+    .type sw_caller, %function
+    .thumb_func
+sw_caller:
+    push    {r4, lr}
+    adds    r4, r1, #0
+    movs    r3, r0
+    blx     switch8
+tbl:
+    .byte   3
+    .byte   (c0 - tbl) / 2, (c1 - tbl) / 2, (c2 - tbl) / 2, (cd - tbl) / 2
+    .balign 2
+c0: adds    r0, r4, #5
+    pop     {r4, pc}
+c1: subs    r0, r4, #7
+    pop     {r4, pc}
+c2: lsls    r0, r4, #2
+    pop     {r4, pc}
+cd: mvns    r0, r4
+    pop     {r4, pc}
+"""
+
+
+def test_thumb_switch_helper(tmp_path):
+    res, entries, verdicts = _recompile_and_compare(tmp_path, {"s.S": SWITCH8}, cases=48)
+    by_name = {}
+    for line in subprocess.run(["llvm-readelf", "-s", str(tmp_path / "p.elf")], capture_output=True,
+                               text=True, check=True).stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 8 and parts[3] == "FUNC":
+            by_name[parts[7]] = int(parts[1], 16)
+    funcs = res["funcs"]
+    sw, sc = by_name["switch8"], by_name["sw_caller"] & ~1
+    assert funcs[sw].mret
+    (conts,) = funcs[sc].mret_calls.values()
+    assert len(conts) == 4 and all(c in funcs[sc].insns for c in conts)
+    assert verdicts[sc][0] == "pass", verdicts[sc]
+    assert verdicts[sc][2] == 48
+
+
 # Hand-written code in the style of the game's video decoder: LR set once by `add lr, pc`,
 # then a conditional branch or a jump through a table of offsets is the call; a routine
 # picks its tail through a table of negative offsets placed after the code it jumps to,
@@ -425,6 +483,32 @@ def test_data_pointer_to_a_function_another_one_falls_into():
     assert b in fall_into["arm"] and c + 8 in fall_into["arm"]
     found = recompile.data_pointer_entries(img, an, [(base + 0x100, 12)], dict(entries), cover, fall_into)
     assert found == {b: "arm"}
+
+
+def test_position_independent_callback_and_thumb_thunk():
+    """MHXX installs a Thumb callback with `ldr r1, =off; add r1, pc` (no word anywhere holds
+    its address), and reaches Thumb code from an ARM thunk with `add ip, pc, #1; bx ip`."""
+    import struct
+    import recompile
+    from recomp.analysis import Analyzer, Image
+    base = 0x00100000
+    code = bytearray(0x100)
+    setup, cb, thunk, body = base, base + 0x10, base + 0x20, base + 0x30
+    struct.pack_into("<4H", code, 0, 0x4901, 0x4479, 0x60C1, 0x4770)   # ldr r1, [pc, #4]; add r1, pc; str r1, [r0, #12]; bx lr
+    struct.pack_into("<I", code, 8, (cb + 1 - (setup + 6)) & 0xFFFFFFFF)  # add's PC is its address + 4
+    struct.pack_into("<2H", code, 0x10, 0x6900, 0x4770)                # cb: ldr r0, [r0, #16]; bx lr
+    struct.pack_into("<3I", code, 0x20, 0xE2800004, 0xE28FC001 + 4, 0xE12FFF1C)  # add r0, #4; add ip, pc, #5; bx ip
+    struct.pack_into("<2H", code, 0x30, 0x3001, 0x4770)                # body: adds r0, #1; bx lr
+    img = Image(bytes(code), base, 0x40)
+    an = Analyzer(img)
+    entries = {setup: "thumb", thunk: "arm"}
+    first = an.analyze_all(entries)
+    assert first.get(body) is not None and first[body].mode == "thumb"
+    assert recompile.pc_relative_sums(first) == {cb + 1}
+    cover, fall_into = recompile.code_cover(first)
+    known = {a: f.mode for a, f in first.items()}
+    found = recompile.data_pointer_entries(img, an, [], known, cover, fall_into, recompile.pc_relative_sums(first))
+    assert found == {cb: "thumb"}
 
 
 def test_code_cave_runs_like_the_patched_code(tmp_path):

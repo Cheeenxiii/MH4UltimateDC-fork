@@ -20,6 +20,17 @@ def is_vmsr_fpscr(ins: Insn) -> bool:
 MAX_INSNS_PER_FUNCTION = 200_000
 MAX_JUMP_TABLE = 4096
 
+# RVCT's Thumb switch helper (`__ARM_common_switch8`, ARM code). The caller does `bl helper`
+# with the case index in r3 and a byte table right after the BL: its length n at lr-1, then
+# n+1 entries (the last one is the default). It jumps to lr + 2 * table[min(r3, n)], back in
+# the caller, and never returns to lr.
+SWITCH8 = (0xE55EC001,      # ldrb ip, [lr, #-1]
+           0xE153000C,      # cmp r3, ip
+           0x27DE300C,      # ldrbhs r3, [lr, ip]
+           0x37DE3003,      # ldrblo r3, [lr, r3]
+           0xE08EC083,      # add ip, lr, r3, lsl #1
+           0xE12FFF1C)      # bx ip
+
 
 class Image:
     """The program image: `code` holds text|ro|data contiguously from `base`."""
@@ -191,7 +202,7 @@ class Analyzer:
         tracked along the way (functions are entered with LEN=STRIDE=0, as the procedure
         call standard requires) so VFP instructions in short-vector code are translated
         with the right element count."""
-        f = Function(entry, mode, mret=self.inline_arg_callee(entry, mode))
+        f = Function(entry, mode, mret=self.inline_arg_callee(entry, mode) or self.switch8_callee(entry, mode))
         work: list[tuple[int, int]] = [(entry, 0)]
         vec_at: dict[int, int] = {}
         count = 0
@@ -269,6 +280,26 @@ class Analyzer:
         RVCT's floating-point library uses this for its special-case handlers."""
         w = self.img.read32(addr) if mode == "arm" else None
         return w is not None and (w & 0xFFFF0FFF) == 0xE49E0004
+
+    def switch8_callee(self, addr: int, mode: str) -> bool:
+        """The Thumb switch helper (see SWITCH8)."""
+        return mode == "arm" and all(self.img.read32(addr + 4 * i) == w for i, w in enumerate(SWITCH8))
+
+    def switch8_targets(self, ins: Insn) -> list[int] | None:
+        """The case targets of a Thumb `bl` to the switch helper: the table starts at the
+        return address (BL+4, Thumb bit clear), its first byte is the case count n."""
+        table = ins.next
+        off = table - self.img.base
+        if not 0 <= off < len(self.img.code):
+            return None
+        n = self.img.code[off]
+        raw = self.img.code[off + 1: off + 2 + n]
+        if len(raw) != n + 1:
+            return None
+        targets = sorted({table + 2 * b for b in raw})
+        if not all(self.img.in_text(t) for t in targets):
+            return None
+        return targets
 
     def _link_return(self, f: Function, ins: Insn) -> int | None:
         """If LR was just set to a constant (`mov lr, pc`, `add/sub lr, pc, #imm`, possibly
@@ -412,6 +443,17 @@ class Analyzer:
                     f.labels.add(t)
                     work.append(t)
                 return False
+            if not ins.conditional and ins.mode == "thumb" and self.switch8_callee(ins.target, ins.target_mode):
+                conts = self.switch8_targets(ins)
+                if conts is None:
+                    f.problems.append(f"unresolved switch table at {ins.addr:#x}")
+                    ins.kind, ins.imm, ins.trap_reason = TRAP, 4, "unresolved switch table"
+                    return False
+                f.mret_calls[ins.addr] = conts
+                for t in conts:
+                    f.labels.add(t)
+                    work.append(t)
+                return False
             return True
         if k == ICALL:
             return True
@@ -464,8 +506,12 @@ class Analyzer:
                     ins.kind, ins.jt_kind, ins.jt_base, ins.body, ins.pcexpr = JTAB, "ldrpc", base, [], None
                     return self._step(f, ins, entries, work)
             t = self._const_target(ins)
-            if t is not None and self.plausible_entry(t, "arm"):
-                f.calls.add((t, "arm"))     # still dispatched at run time; now recompiled too
+            if t is not None:
+                # an odd target is Thumb code (`add ip, pc, #1; bx ip`: an ARM thunk into Thumb)
+                tm = "thumb" if t & 1 and (ins.word & 0x0FFFFFF0) == 0x012FFF10 else "arm"
+                t &= ~1 if tm == "thumb" else ~0
+                if self.plausible_entry(t, tm):
+                    f.calls.add((t, tm))    # still dispatched at run time; now recompiled too
             return ins.conditional
         if k == JTAB:
             targets = self.jump_table(ins, f)

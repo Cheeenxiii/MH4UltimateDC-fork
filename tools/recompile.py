@@ -205,6 +205,44 @@ def data_pointer_entries(img: Image, an: Analyzer, segments: list[tuple[int, int
     return found
 
 
+def pc_relative_sums(funcs: dict) -> set[int]:
+    """Addresses code computes position-independently: a literal load followed, within a few
+    instructions that leave the register alone, by an add of the PC (Thumb `ldr rN, =off;
+    add rN, pc`; ARM `ldr rN, =off; add rD, pc, rN`). MHXX installs callbacks this way, so
+    neither the data nor the literals hold their addresses."""
+    out: set[int] = set()
+    for f in funcs.values():
+        for ins in f.insns.values():
+            if ins.literal is None:
+                continue
+            w = ins.word
+            if ins.mode == "thumb":
+                if ins.size != 2 or w >> 11 != 0b01001:
+                    continue
+                reg = (w >> 8) & 7
+            else:
+                reg = (w >> 12) & 0xF
+            writes = re.compile(rf"\bR\({reg}\) =")
+            a = ins.next
+            for _ in range(4):
+                nxt = f.insns.get(a)
+                if nxt is None:
+                    break
+                v = nxt.word
+                if nxt.mode == "thumb" and nxt.size == 2 and (v & 0xFF78) == 0x4478 \
+                        and (v & 7) | ((v >> 4) & 8) == reg:                     # add rN, pc
+                    out.add((ins.literal + a + 4) & 0xFFFFFFFF)
+                    break
+                if nxt.mode == "arm" and v >> 28 == 0xE and ((v & 0x0FEF0FFF) == (0x008F0000 | reg)
+                                                           or (v & 0x0FEF0FFF) == (0x0080000F | reg << 16)):
+                    out.add((ins.literal + a + 8) & 0xFFFFFFFF)                   # add rD, pc, rN
+                    break
+                if nxt.kind != "op" or any(writes.search(line) for line in nxt.body):
+                    break
+                a = nxt.next
+    return out
+
+
 INIT_LOOP = struct.pack("<5H", 0x6820, 0x1900, 0x4780, 0x1D24, 0x42AC)  # ldr r0,[r4]; adds r0,r4; blx r0; adds r4,#4; cmp r4,r5
 
 
@@ -282,6 +320,7 @@ def recompile(img: Image, entries: dict[int, str], out: str, log=print,
         cover, fall_into = code_cover(first)
         known = {a: f.mode for a, f in first.items()}
         literals = {i.literal for f in first.values() for i in f.insns.values() if i.literal is not None}
+        literals |= pc_relative_sums(first)
         extra = data_pointer_entries(img, an, data_segments, known, cover, fall_into, literals)
         entries = {**entries, **extra}
         log(f"  {len(extra)} entry points found through data pointers")

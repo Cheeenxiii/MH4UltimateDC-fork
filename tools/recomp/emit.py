@@ -119,8 +119,10 @@ class FunctionEmitter:
                 out = [f"if (C_{COND_NAMES[ins.cond]}) goto {label(ins.target)};"]
         elif k == BL and ins.addr in f.mret_calls:
             # the callee continues at one of the continuations after its descriptor word,
-            # or returns to our caller (see Analyzer.inline_arg_callee)
-            cases = " ".join(f"case {hexc(t)}: goto {label(t)};" for t in f.mret_calls[ins.addr])
+            # or returns to our caller (see Analyzer.inline_arg_callee); or it is the Thumb
+            # switch helper, which continues at a case of a table after the BL (switch8_targets)
+            thumb = 1 if f.mode == "thumb" else 0
+            cases = " ".join(f"case {hexc(t | thumb)}: goto {label(t)};" for t in f.mret_calls[ins.addr])
             out = wrap(ins, [f"R(14) = {hexc(_lr_value(ins))};", self.call(ins.target, ins.target_mode),
                              f"switch (R(15)) {{ {cases} default: RC_RET(R(15)); }}"])
         elif k == BL:
