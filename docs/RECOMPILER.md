@@ -88,8 +88,8 @@ Random states can't reach everything (most game functions fault early on random 
 
 | | |
 |---|---|
-| Functions | 40,566 (8,124 found through data pointers) |
-| Instructions | 3,256,600 |
+| Functions | 40,577 (8,131 found through data pointers) |
+| Instructions | 3,256,625 |
 | Jump tables | 3,475, all resolved |
 | Traps | 1 (data after a call that never returns) |
 | Analysis problems | 0 |
