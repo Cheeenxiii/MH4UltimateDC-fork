@@ -3,8 +3,8 @@
 Recovered with `tools/mt_dti.py` from USA v1.3.0. Full table: [`config/mt_classes.tsv`](../../config/mt_classes.tsv) (DTI object address, name, parent, instance size, class id).
 
 ## Result
-- **992 classes**, every parent resolved, single root **`MtObject`** (size 4: just a vtable) plus the separate `MtGeomConvex` tree.
-- 990 recovered by emulating the static initializers, 2 by static register tracking.
+- **992 classes**, every parent resolved, single root **`MtObject`** (size 4: just a vtable).
+- 991 recovered by emulating the static initializers, 1 (`sEnemy`, no id) by static register tracking. Each initializer is emulated from the image's own writable memory: before that, one run on a stray pointer corrupted the constructor's class list for later ones, which left `MtGeomConvex` without a parent and two ids wrong.
 
 | Family | Count | What it is |
 |---|---|---|
@@ -21,7 +21,7 @@ Recovered with `tools/mt_dti.py` from USA v1.3.0. Full table: [`config/mt_classe
   `MtDTI(this, name, parent, size, arg4, flags, id)`, with the last three on the stack.
 - Fields it writes: `+0x00` vtable, `+0x04` name, `+0x14` cleared, `+0x18` size (low 23 bits) with flags in the top bits, `+0x1C` id.
 - After the call, each initializer overwrites `+0x00` with the class-specific DTI vtable (it holds the class's "create instance" hook). **Next:** read those vtables to find each class's constructor and its main vtable.
-- **Class id:** `~crc32(name) & 0x7FFFFFFF` (CRC-32 without the final inversion, 31 bits) for 989/992 classes; the other 3 pass an explicit id. `mt_dti.mt_hash()` implements it.
+- **Class id:** `~crc32(name) & 0x7FFFFFFF` (CRC-32 without the final inversion, 31 bits) for 991/992 classes (all but `sEnemy`, whose id isn't recovered); none passes an explicit id. `mt_dti.mt_hash()` implements it.
 
 ## Resource classes (format research checklist)
 Archives (`rArchive`) identify each entry's type by this class id, so the table above maps every archive entry to its resource class. Each line below is a file format to document:

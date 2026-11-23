@@ -9,7 +9,9 @@ MT Framework registers every class at startup with a constructor call like
 This tool finds that constructor automatically (the most common call target right
 after code takes the address of a class-name string), then:
   1. emulates every function that calls it in Unicorn, recording the real arguments
-     and reading back the id the constructor stores (DTI + 0x1C);
+     and reading back the id the constructor stores (DTI + 0x1C). Each function starts
+     from the image's own writable memory: a constructor run on a stray pointer would
+     otherwise corrupt the class list for every later one;
   2. falls back to a static register scan for call sites the emulation misses.
 
 usage: mt_dti.py --exheader exheader.bin --code code.bin -o config/mt_classes.tsv
@@ -35,8 +37,8 @@ ID_OFFSET = 0x1C
 
 def mt_hash(name: str) -> int:
     """Class id MT Framework derives from a name when none is given: CRC-32 without the
-    final inversion, truncated to 31 bits. Matches 989/992 classes in MH4U v1.3.0; the
-    rest pass an explicit id. Archive (.arc) entries identify resource types this way."""
+    final inversion, truncated to 31 bits. Matches 991/992 classes in MH4U v1.3.0 (the
+    last one's id isn't recovered). Archive (.arc) entries identify resource types this way."""
     return ~zlib.crc32(name.encode()) & 0x7FFFFFFF
 
 
@@ -140,13 +142,18 @@ def emulate(img: Image, ctor: int, starts: list[int], max_insns: int = 300_000) 
     from unicorn import UC_ARCH_ARM, UC_HOOK_CODE, UC_MODE_ARM, Uc, UcError
     from unicorn.arm_const import (UC_ARM_REG_C1_C0_2, UC_ARM_REG_FPEXC, UC_ARM_REG_LR,
                                    UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2,
-                                   UC_ARM_REG_R3, UC_ARM_REG_SP)
+                                   UC_ARM_REG_R3, UC_ARM_REG_R4, UC_ARM_REG_R5,
+                                   UC_ARM_REG_R6, UC_ARM_REG_R7, UC_ARM_REG_R8,
+                                   UC_ARM_REG_R9, UC_ARM_REG_R10, UC_ARM_REG_R11,
+                                   UC_ARM_REG_R12, UC_ARM_REG_SP)
 
     page = 0x1000
     mu = Uc(UC_ARCH_ARM, UC_MODE_ARM)
     mem_end = (img.mem_end + page - 1) & ~(page - 1)
     mu.mem_map(img.base, mem_end - img.base)
     mu.mem_write(img.base, img.code)
+    writable = img.base + img.text_size        # ro, data and bss, as the image has them
+    pristine = img.code[img.text_size:].ljust(mem_end - writable, b"\0")
     stack_top, ret, scratch = 0x0F000000, 0x0E000000, 0x08000000
     mu.mem_map(stack_top - 0x100000, 0x100000)
     mu.mem_map(ret, page)
@@ -174,20 +181,25 @@ def emulate(img: Image, ctor: int, starts: list[int], max_insns: int = 300_000) 
                             source="emu")
 
     mu.hook_add(UC_HOOK_CODE, hook, begin=ctor, end=ctor)
+    args = (UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3, UC_ARM_REG_R4,
+            UC_ARM_REG_R5, UC_ARM_REG_R6, UC_ARM_REG_R7, UC_ARM_REG_R8, UC_ARM_REG_R9,
+            UC_ARM_REG_R10, UC_ARM_REG_R11, UC_ARM_REG_R12)
     for start in starts:
-        for reg in (UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3):
+        mu.mem_write(writable, pristine)
+        for reg in args:                         # some initialisers use ip as their caller set it
             mu.reg_write(reg, scratch)
         mu.reg_write(UC_ARM_REG_SP, stack_top - 0x1000)
         mu.reg_write(UC_ARM_REG_LR, ret)
+        before = set(found)
         try:
             mu.emu_start(start, ret, count=max_insns)
         except UcError:
             pass                                 # keep whatever was captured before the fault
-    for d in found.values():                     # the real ctor ran: read back the stored id
-        try:
-            d.id = struct.unpack("<I", bytes(mu.mem_read(d.address + ID_OFFSET, 4)))[0]
-        except UcError:
-            pass
+        for a in set(found) - before:            # the real ctor ran: read back the stored id
+            try:
+                found[a].id = struct.unpack("<I", bytes(mu.mem_read(a + ID_OFFSET, 4)))[0]
+            except UcError:
+                pass
     return found
 
 
