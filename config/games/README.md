@@ -55,3 +55,29 @@ MH3U: the first pass found 20,281 functions, `find_missing_functions.py` 4,510 c
 MHXX v1.4: the first pass found 31,372 functions, `find_missing_functions.py` 7,413 candidates (7,412 created, 1 failed), the second pass 38,932, of which the table keeps the 38,931 in `.text` (1,462 DTI initialisers, 377 SDK); 256 candidates are left for a third pass. 1,833 functions are Thumb (MH4U has 257, MH3U 1): real code, most open with a Thumb `push` and ARM code reaches them with 4,333 `blx` calls.
 
 MHXX's v1.4 update (v4.8.0, title 0004000E00197100, version 4224): a clean dump of the official update, decrypted and checked against its own NCCH hashes, has the same exheader and `code.bin` as the copy a fan translation repackaged (the translation changes only RomFS files). The update replaces the code, so `mhxx/` holds v1.4's tables. Its class registry against v1.0's: the same 3,110 names and parents at other addresses; sizes differ for `MtFile::FileInfo` (0x158 → 0x160) and `sFestaNetwork` (0x47c8 → 0x47d0), and v1.4's emulation also recovers `cUIOArenaDown`'s size and id, which v1.0's table has only from the static fallback.
+
+## MHXX's code modules (CRO)
+
+MHXX keeps much of its code outside `code.bin`: 109 CRO modules in RomFS `/modules_MasterRelease/` (one per large monster `roEmNNN` and small monster `roEmsNNN`, the 16 weapon types `roPlayerQuest00`–`15`, `roOtomo`, `roQuest`, `roVillage`, `roTitle`, `roResult`, `roSwkbd`), with `static.crs` holding the static executable's tables and `/.crr/static_MasterRelease.crr` the module list. Together they hold 0x6384b8 bytes of code (6.5 MB, against `code.bin`'s 11 MB of `.text`). A recompile of `code.bin` alone has none of that code: the static side calls into modules through 699 veneers (`ldr pc, [pc, #-4]`) whose word the loader overwrites, and that until then all point at one stub. MH4U and MH3U have no modules.
+
+`tools/cro.py` reads a module, places it at a chosen base, applies its relocations and its imports from the static executable, and lists its entry points for the recompiler's `Analyzer`. Every one of the 109 modules loads: 135,931 patches, all `R_ARM_ABS32`; 31,734 imports from static.
+
+```
+python3 tools/cro.py info <romfs>/modules_MasterRelease/roEm001.cro
+python3 tools/cro.py imports roEm001.cro --crs static.crs        # the static addresses it imports
+```
+
+`roEm001.cro` (Rathian): code 0x21c14 bytes, 392 imports from static (330 functions, 22 data, the rest veneers sharing a target), 1,271 relocations. The analyser finds 265 functions and 32,700 instructions in it with no problems. Recompiling modules, and linking them to the static library at run time, is not done yet.
+
+## Function maps between games
+
+`tools/fnmap.py` maps functions between two games (or a game and a module) from their recompiler analysis: anchors where a function's normalised instructions are unique and identical in both, then calls at aligned positions in mapped pairs, then, for a given list, clear best matches by similarity. The outputs are derived from game code and stay outside the repository.
+
+```
+python3 tools/fnmap.py side --game mh4u --exheader <work>/exheader.bin --code <work>/code.bin -o mh4u.side
+python3 tools/fnmap.py side --game mhxx --exheader ... --code ... -o mhxx.side
+python3 tools/fnmap.py side --module roEm001.cro --crs static.crs -o roEm001.side
+python3 tools/fnmap.py map mh4u.side mhxx.side [--similar addresses.txt] -o map.tsv
+```
+
+Accuracy, measured on MH4U v1.3.0 against MHXX v1.4 and MH3U: propagation recovers 29–31% of anchors held out from it, 100% (MHXX) and 99.1% (MH3U) of them correctly; a clear similarity match (ratio ≥ 0.7, 0.1 ahead of the next) agrees with propagation for 94% (MHXX, 151/160) and 99% (MH3U, 132/133) of a 300-pair sample. The content repository's `docs/design/monster-port.md` has what this gives for Rathian.
