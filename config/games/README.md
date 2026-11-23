@@ -31,8 +31,10 @@ python3 tools/find_missing_functions.py --exheader ... --code ... --functions <w
 analyzeHeadless <proj> <game> -process game.elf -scriptPath tools/ghidra \
     -preScript CreateFunctionsFromList.java <work>/missing.txt -postScript ExportForAgents.java <work>/export2 none
 python3 tools/build_function_table.py --exheader ... --code ... --functions <work>/export2/functions.tsv \
-    --dti-ctor <game.json's constructor> -o config/games/<game>/functions.tsv
+    --dti-ctor <game.json's constructor> --symbols "" --text-only -o config/games/<game>/functions.tsv
 ```
+
+`--symbols ""` matters: the default, `config/symbols.txt`, names MH4U's addresses, and the first MH3U table carried two of them onto unrelated functions. `--text-only` drops what Ghidra made a function outside `.text` (such as one-byte entries in `.rodata`).
 
 MH3U: the first pass found 20,281 functions, `find_missing_functions.py` 4,510 candidates, the second pass 24,869 (800 DTI initialisers, 493 SDK); 347 candidates are left for a third pass.
 

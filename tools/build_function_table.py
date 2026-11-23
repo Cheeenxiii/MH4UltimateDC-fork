@@ -12,7 +12,11 @@ Columns: address, size, mode, category, name, status, batch, notes
 
 usage: build_function_table.py --exheader exheader.bin --code code.bin \
            --functions functions.tsv [--symbols config/symbols.txt] \
-           [--dti-ctor 0x005bfa94] -o config/functions.tsv
+           [--dti-ctor 0x005bfa94] [--text-only] -o config/functions.tsv
+
+Reference games (config/games/) pass --symbols "" (config/symbols.txt names MH4U's
+addresses) and --text-only (drops what Ghidra made a function outside .text, such as
+one-byte entries in .rodata).
 """
 from __future__ import annotations
 
@@ -64,11 +68,13 @@ def calls_target(code: bytes, base: int, addr: int, size: int, target: int) -> b
 
 
 def build(code: bytes, header: exh.ExHeader, functions: list[dict], symbols: dict[int, str],
-          dti_ctor: int | None, existing: dict[int, dict]) -> list[dict]:
+          dti_ctor: int | None, existing: dict[int, dict], text_only: bool = False) -> list[dict]:
     base = header.text.address
     rows = []
     for f in functions:
         addr, size = int(f["address"], 16), int(f["size"], 16)
+        if text_only and not base <= addr < base + header.text.size:
+            continue
         thumb = f["mode"] == "thumb"
         if contains_svc(code, base, addr, size, thumb):
             category = "sdk"
@@ -111,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--functions", required=True)
     ap.add_argument("--symbols", default=os.path.join(os.path.dirname(__file__), "..", "config", "symbols.txt"))
     ap.add_argument("--dti-ctor", type=lambda s: int(s, 0))
+    ap.add_argument("--text-only", action="store_true", help="drop functions outside the text segment")
     ap.add_argument("-o", "--output", required=True)
     args = ap.parse_args(argv)
 
@@ -119,7 +126,8 @@ def main(argv: list[str] | None = None) -> int:
     with open(args.code, "rb") as f:
         code = codebin2elf.load_code(header, f.read())
     existing = {int(r["address"], 16): r for r in read_tsv(args.output)} if os.path.exists(args.output) else {}
-    rows = build(code, header, read_tsv(args.functions), load_symbols(args.symbols), args.dti_ctor, existing)
+    rows = build(code, header, read_tsv(args.functions), load_symbols(args.symbols), args.dti_ctor, existing,
+                 args.text_only)
     write_tsv(rows, args.output)
 
     counts: dict[str, int] = {}

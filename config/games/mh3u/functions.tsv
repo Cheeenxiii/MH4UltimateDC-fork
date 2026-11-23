@@ -1,6 +1,6 @@
 # Function status table (single writer: orchestrator). Built by tools/build_function_table.py
 address	size	mode	category	name	status	batch	notes
-0x00100000	0x2c	arm	unknown	entry	todo		
+0x00100000	0x2c	arm	unknown		todo		
 0x00100024	0x1c	arm	unknown		todo		
 0x00100048	0xec	arm	sdk		replace		
 0x00100118	0x44	arm	unknown		todo		
@@ -12861,7 +12861,7 @@ address	size	mode	category	name	status	batch	notes
 0x005bb314	0x1ac	arm	unknown		todo		
 0x005bb4c8	0x1b0	arm	unknown		todo		
 0x005bb68c	0x18	arm	unknown		todo		
-0x005bb940	0x44	arm	unknown	uGUI::createProperty	todo		
+0x005bb940	0x44	arm	unknown		todo		
 0x005bb994	0x9c	arm	unknown		todo		
 0x005bba34	0x6c	arm	unknown		todo		
 0x005bbaa0	0x30	arm	unknown		todo		
