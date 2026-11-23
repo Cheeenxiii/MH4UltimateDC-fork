@@ -61,7 +61,7 @@ The decision (from PR #64's review; on `main` from the release after 0.1.6): `ma
 
 ## Performance
 
-Generated functions keep guest registers and flags in local variables (so the C compiler can put them in host registers) and write them back to the `RCtx` only around calls, system calls, returns and yields. VFP arithmetic runs on the host FPU set up like FPSCR (rounding mode, flush-to-zero) and only NaN results take a slow path to get ARM's NaN. Indirect calls use a per-site inline cache. Each basic block charges its instruction count to the cycle budget (Azahar's JIT uses a per-instruction cycle table; the totals come out close).
+Generated functions keep guest registers and flags in local variables (so the C compiler can put them in host registers) and write them back to the `RCtx` only around calls, system calls, returns and yields. VFP arithmetic runs on the host FPU set up like FPSCR (rounding mode, flush-to-zero) and only NaN results take a slow path to get ARM's NaN. Indirect calls use a per-site inline cache; an empty cache holds target 1 (Thumb address 0, never a function) with a stub that passes it to `rc_call`, so a garbage pointer of 1 is dispatched like any other miss. Each basic block charges its instruction count to the cycle budget (Azahar's JIT uses a per-instruction cycle table; the totals come out close).
 
 On `port/tests/bench.c` under Azahar (same machine, same output), the recompiled code at `-O2` runs the integer, sorting, VFP and indirect-call phases 2-6x faster than Azahar's JIT, about 1.5x faster overall including the emulator's own per-frame work.
 

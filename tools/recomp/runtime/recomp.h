@@ -612,8 +612,12 @@ RC_INLINE double rc_d2d(u32 fpscr, u64 a) { return u2d(RC_IN64(fpscr, a)); }
  * call site dispatches on it (RVCT fplib special-case handlers; see recomp/analysis.py). */
 #define RC_RET_TO(v) do { u32 _rv = (v); RC_FLUSH(); ctx->r[15] = _rv; return; } while (0)
 
-/* Indirect call through a per-site inline cache (one target remembered per call site). */
-#define RC_ICALL(t) do { static u32 ic_t_ = 1; static RFunc ic_f_; const u32 _t = (t); \
+/* Indirect call through a per-site inline cache (one target remembered per call site). An
+ * empty cache holds target 1 (Thumb address 0, never a function) with a stub that sends it
+ * to rc_call like any miss: a guest call to 1 (a garbage function pointer) must not reach
+ * an empty function pointer. */
+RC_INLINE void rc_call_one(RCtx *ctx) { rc_call(ctx, 1); }
+#define RC_ICALL(t) do { static u32 ic_t_ = 1; static RFunc ic_f_ = rc_call_one; const u32 _t = (t); \
         if (_t == ic_t_) ic_f_(ctx); else rc_call_ic(ctx, _t, &ic_t_, &ic_f_); } while (0)
 
 /* Every function knows the address it should return to: LR at entry, or, for code that the

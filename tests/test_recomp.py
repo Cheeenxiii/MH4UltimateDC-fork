@@ -566,3 +566,43 @@ def test_code_cave_runs_like_the_patched_code(tmp_path):
     res = recompile.recompile(Image(bytes(page), base, 0x20), {base: "arm", base + 0x10: "arm"},
                               str(tmp_path / "plain"), log=lambda *a: None)
     assert base + 0x800 not in res["funcs"] and res["report"]["trap_instructions"] == 1
+
+
+def test_indirect_call_to_one_leaves_through_rc_call(tmp_path):
+    """RC_ICALL's empty inline cache holds target 1 (Thumb address 0). A guest call to 1 (a
+    garbage function pointer: MH3U's gametest found one through a random vtable) must go to
+    rc_call like any miss, not to an empty host function pointer (a host fault at 0)."""
+    import random
+    import struct
+
+    import recompile
+    from recomp import build as rbuild
+    from recomp.analysis import Image
+    from recomp.gametest import (
+        BUF_BASE,
+        BUF_SIZE,
+        STACK_SIZE,
+        STACK_TOP,
+        TLS,
+        Tester,
+        random_state,
+    )
+    from recomp.harness.machines import ST_NOFUNC, Region
+
+    base = 0x00100000
+    words = [0xE92D4010, 0xE12FFF30, 0xE8BD8010]       # push {r4, lr}; blx r0; pop {r4, pc}
+    code = struct.pack(f"<{len(words)}I", *words).ljust(0x1000, b"\0")
+    out = tmp_path / "recomp"
+    res = recompile.recompile(Image(code, base, 4 * len(words)), {base: "arm"}, str(out), log=lambda *a: None)
+    assert not res["problems"], res["problems"]
+    lib = rbuild.build(str(out), 2, "O1", ["RC_CHECK_RETURNS"], "icall.so", [rbuild.HARNESS])
+    size = 0x10000
+    rw = [Region(base, size, True, code.ljust(size, b"\0")),
+          Region(STACK_TOP - STACK_SIZE, STACK_SIZE, True, bytes(STACK_SIZE)),
+          Region(BUF_BASE, BUF_SIZE, True, bytes(BUF_SIZE)),
+          Region(TLS, 0x1000, True, bytes(0x1000))]
+    tester = Tester(lib, [], rw, seed=5)
+    st = random_state(random.Random(1))
+    st.r[0] = 1
+    r = tester.nat.run(base, False, st, budget=10000)
+    assert (r.status, r.info0) == (ST_NOFUNC, 1), r
