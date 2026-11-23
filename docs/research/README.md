@@ -13,3 +13,4 @@ One Markdown file per topic (file formats, structs, subsystems). Cite addresses 
 | [screen-filters.md](screen-filters.md) | The engine's post-processing passes (bloom, depth of field, motion and radial blur, haze, colour correction): classes, where MH4U uses them, how the port turns them off |
 | [metal.md](metal.md) | Metal on macOS: what MoltenVK costs Azahar's Vulkan renderer, what a native Metal backend would take, and the measurements that decide between them (MoltenVK now) |
 | [android-fiber-jni.md](android-fiber-jni.md) | Android save-data crash: ART treats JNI calls from the recompiled-code fiber stack as a stack overflow; caching the build flavor and user directory keeps the fiber out of Java |
+| [extdata.md](extdata.md) | Extra Data (SD extdata): the exheader's extdata id, where Azahar keeps the folder, `tools/extdata_path.py`; the open check that the game reads files put there |
