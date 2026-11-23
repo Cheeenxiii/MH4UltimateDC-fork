@@ -138,7 +138,10 @@ def find_callers(img: Image, target: int) -> list[int]:
 
 # ── Step 1: emulation ────────────────────────────────────────────────────────
 
-def emulate(img: Image, ctor: int, starts: list[int], max_insns: int = 300_000) -> dict[int, DTI]:
+def emulate(img: Image, ctor: int, starts: list[int], max_insns: int = 300_000,
+            after=None) -> dict[int, DTI]:
+    """`after(mu, new)`, if given, runs after each initialiser with the DTI addresses it
+    registered, while its memory is still in place (tools/mt_vtables.py reads their vtables)."""
     from unicorn import UC_ARCH_ARM, UC_HOOK_CODE, UC_MODE_ARM, Uc, UcError
     from unicorn.arm_const import (UC_ARM_REG_C1_C0_2, UC_ARM_REG_FPEXC, UC_ARM_REG_LR,
                                    UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2,
@@ -200,6 +203,8 @@ def emulate(img: Image, ctor: int, starts: list[int], max_insns: int = 300_000) 
                 found[a].id = struct.unpack("<I", bytes(mu.mem_read(a + ID_OFFSET, 4)))[0]
             except UcError:
                 pass
+        if after is not None:
+            after(mu, set(found) - before)
     return found
 
 

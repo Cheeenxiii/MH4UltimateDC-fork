@@ -69,6 +69,23 @@ python3 tools/cro.py imports roEm001.cro --crs static.crs        # the static ad
 
 `roEm001.cro` (Rathian): code 0x21c14 bytes, 392 imports from static (330 functions, 22 data, the rest veneers sharing a target), 1,271 relocations. The analyser finds 265 functions and 32,700 instructions in it with no problems. Recompiling modules, and linking them to the static library at run time, is not done yet.
 
+## Class vtables
+
+`tools/mt_vtables.py` finds every MT class's instance vtable. It emulates the DTI initialisers (as `mt_dti.py` does) to read each DTI's own vtable. Then it emulates each DTI's `newInstance` (slot 2) with the allocator getter replaced by a fake allocator, and records every vtable the constructors store in the new object: the last is the class's, the earlier ones its bases'. Classes with no instance of their own (abstract ones) take the nearest vtable that all their emulated subclasses' chains store. With `--module`, CRO modules are loaded beside `code.bin` with the static veneers into them resolved, so classes whose constructors live in a module (MHXX's monsters) resolve too.
+
+```
+python3 tools/mt_vtables.py --exheader <work>/exheader.bin --code <work>/code.bin -o mh4u.vt
+python3 tools/mt_vtables.py --exheader ... --code ... --crs static.crs --module <romfs>/*.cro -o mhxx.vt
+```
+
+| Game | Classes | Vtables found | by emulation | from subclasses' chains | static fallback |
+|---|---|---|---|---|---|
+| MH4U v1.3.0 | 991 | 982 | 940 | 36 | 6 |
+| MHXX v1.4 (with its 109 modules) | 3,109 | 3,103 | 2,964 | 128 | 11 |
+| MH3U | 1,218 | 1,208 | 1,167 | 34 | 7 |
+
+Slots run to the next known vtable; empty slots (0) count, trailing ones don't. The output lists addresses only, but it's derived from game code: keep it outside the repository.
+
 ## Function maps between games
 
 `tools/fnmap.py` maps functions between two games (or a game and a module) from their recompiler analysis: anchors where a function's normalised instructions are unique and identical in both, then calls at aligned positions in mapped pairs, then, for a given list, clear best matches by similarity. The outputs are derived from game code and stay outside the repository.
