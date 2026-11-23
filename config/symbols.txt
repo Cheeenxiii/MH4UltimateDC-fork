@@ -186,3 +186,12 @@
 0x00efbef8 enemyDataPaths                 # const {char *path; char *path2;}[110], "enemy\emNNN\data\emNNN" for each emNNN with files, both pointers the same
 0x00f3a024 enemyDataById                  # u32 *[124], by monster id: each to a 2-word record of loaded rEnemyData (records from 0x00f39c90, some shared); 0x00f3a020 points here
 0x0068df70 releaseEnemyData               # (this): for each id < 0x7c, releases the rEnemyData in this+0x13a4 that enemyDataById points to and clears the slots
+
+# Heap: MT Framework allocators (plugin alloc/free, include/mh4u_plugin.h; port/src/plugin_host.h). Data addresses are the same in EUR v1.1.0
+0x010bdc88 g_mtAllocators                 # MtAllocator *[64], by a class's allocator category (bits 21..26 of its DTI's +0x18 word); [0] is the default heap, which global allocations use (vtable +0x20 alloc, +0x38 free)
+0x010bd718 g_mtDefaultHeap                # MtCtrHeapAllocator "Heap" in .bss (vtable 0x00e62734, size at +0xc, bytes used at +4, SDK heap at +0x4c); g_mtAllocators[0] once the game runs
+0x001076cc MtDTI::allocator               # (dti): g_mtAllocators[category]; each class's operator new calls its +0x24 (size, align, dti+0x1c)
+0x00341784 MtCtrHeapAllocator::alloc      # vtable +0x20 (this, size, align): under the heap's lock when thread-safe (+0x36 bit 1), sdkHeap_alloc(this+0x4c, size, align, 0, 0), adds size to +4; +0x24 and +0x28 forward here
+0x00341658 MtCtrHeapAllocator::free       # vtable +0x38 (this, p): p may be null; block size from vtable +0x3c, sdkHeap_free(this+0x4c, p) under the lock, subtracts it from +4
+0x00484dcc sdkHeap_alloc                  # (heap, size, align, 0, 0): the SDK heap under MtCtrHeapAllocator
+0x00484dac sdkHeap_free                   # (heap, p)
