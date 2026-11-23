@@ -543,7 +543,7 @@ class Analyzer:
                 continue
             f = self.analyze(a, entries[a], entries)
             funcs[a] = f
-            for t, m in f.calls:
+            for t, m in sorted(f.calls):     # a set of (address, mode): its order changes per run
                 if t not in entries and self.plausible_entry(t, m):
                     entries[t] = m
                     queue.append(t)
