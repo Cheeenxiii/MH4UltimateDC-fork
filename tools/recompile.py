@@ -8,6 +8,10 @@ The tables in config/ hold USA v1.3.0's addresses. The code of a version with sh
 config/versions.json (EUR v1.1.0), whose functions are elsewhere, is refused: tools/build_game.py
 moves the addresses first. Other code (USA v1.3.0's, the base games', unknown code) is
 recompiled with the tables as they are.
+
+--game <name> recompiles a reference game (config/games/<name>/, never a port target): its
+own function table and extra entries, no hooks or tunables, and its code must match the hash
+in its game.json. Without --game nothing changes.
 """
 from __future__ import annotations
 
@@ -371,25 +375,80 @@ def shifted_version(code_sha1: str, path: str = VERSIONS) -> dict | None:
     return next((v for v in versions if v.get("shifts") and v.get("code_sha1") == code_sha1), None)
 
 
+GAMES = os.path.join(ROOT, "config", "games")
+
+
+def game_config(name: str, games: str = GAMES) -> tuple[dict, str]:
+    """A reference game's game.json and its folder (config/games/<name>/)."""
+    folder = os.path.join(games, name)
+    path = os.path.join(folder, "game.json")
+    if not re.fullmatch(r"[a-z0-9_]+", name) or not os.path.exists(path):
+        known = sorted(d for d in os.listdir(games) if os.path.exists(os.path.join(games, d, "game.json"))) \
+            if os.path.isdir(games) else []
+        raise SystemExit(f"no reference game {name!r} in {games} (known: {', '.join(known) or 'none'})")
+    with open(path) as f:
+        return json.load(f), folder
+
+
+def resolve_args(args: argparse.Namespace, games: str = GAMES) -> dict | None:
+    """Fills the defaults left unset: MH4U's config/ without --game, the reference game's
+    folder with it (no hooks, no tunables, no default dump). Returns the game's game.json."""
+    extra = args.extra or []
+    if not args.game:
+        args.exheader = args.exheader or os.path.join(ROOT, "baserom", "update_v130", "exheader.bin")
+        args.code = args.code or os.path.join(ROOT, "baserom", "update_v130", "code.bin")
+        args.functions = args.functions or os.path.join(ROOT, "config", "functions.tsv")
+        args.extra = [os.path.join(ROOT, "config", "extra_entries.txt")] + extra
+        args.hooks = os.path.join(ROOT, "config", "hooks.txt") if args.hooks is None else args.hooks
+        args.tunables = os.path.join(ROOT, "config", "tunables.txt") if args.tunables is None else args.tunables
+        args.out = args.out or os.path.join(ROOT, "build", "recomp")
+        return None
+    game, folder = game_config(args.game, games)
+    if not args.exheader or not args.code:
+        raise SystemExit(f"--game {args.game} needs --exheader and --code from your own dump of it")
+    args.functions = args.functions or os.path.join(folder, "functions.tsv")
+    if not os.path.exists(args.functions):
+        raise SystemExit(f"{args.game} has no function table yet ({args.functions})")
+    own = os.path.join(folder, "extra_entries.txt")
+    args.extra = ([own] if os.path.exists(own) else []) + extra
+    args.hooks = args.hooks or None
+    args.tunables = args.tunables or None
+    args.out = args.out or os.path.join(ROOT, "build", "recomp-" + args.game)
+    return game
+
+
+def check_game_code(game: dict, code: bytes) -> None:
+    """A reference game's tables fit only the code its game.json names."""
+    sha1 = hashlib.sha1(code).hexdigest()
+    if sha1 != game["code_sha1"]:
+        raise SystemExit(f"this code (sha1 {sha1}) isn't {game['name']}'s ({game['code_sha1']}): "
+                         "its tables would point into the wrong code")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--exheader", default=os.path.join(ROOT, "baserom", "update_v130", "exheader.bin"))
-    ap.add_argument("--code", default=os.path.join(ROOT, "baserom", "update_v130", "code.bin"))
-    ap.add_argument("--functions", default=os.path.join(ROOT, "config", "functions.tsv"))
-    ap.add_argument("--extra", action="append", default=[os.path.join(ROOT, "config", "extra_entries.txt")],
+    ap.add_argument("--game", default="", help="a reference game in config/games/ (default: MH4U, config/)")
+    ap.add_argument("--exheader", default=None)
+    ap.add_argument("--code", default=None)
+    ap.add_argument("--functions", default=None)
+    ap.add_argument("--extra", action="append", default=None,
                     help="more entry point lists (address [arm|thumb] per line)")
-    ap.add_argument("--hooks", default=os.path.join(ROOT, "config", "hooks.txt"),
+    ap.add_argument("--hooks", default=None,
                     help="hook points: functions native code may wrap or replace")
-    ap.add_argument("--tunables", default=os.path.join(ROOT, "config", "tunables.txt"),
+    ap.add_argument("--tunables", default=None,
                     help="instructions whose immediate the host can change at run time")
     ap.add_argument("--no-data-pointers", action="store_true", help="don't scan .rodata/.data for code pointers")
-    ap.add_argument("-o", "--out", default=os.path.join(ROOT, "build", "recomp"))
+    ap.add_argument("-o", "--out", default=None)
     ap.add_argument("--versions", default=VERSIONS, help=argparse.SUPPRESS)
+    ap.add_argument("--games", default=GAMES, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+    game = resolve_args(args, args.games)
     with open(args.exheader, "rb") as f:
         header = exh.parse(f.read())
     with open(args.code, "rb") as f:
         code = codebin2elf.load_code(header, f.read())
+    if game:
+        check_game_code(game, code)
     version = shifted_version(hashlib.sha1(code).hexdigest(), args.versions)
     if version:
         raise SystemExit(f"this code is {version['name']}: its functions aren't at the addresses in "

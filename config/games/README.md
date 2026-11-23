@@ -34,6 +34,15 @@ python3 tools/build_function_table.py --exheader ... --code ... --functions <wor
     --dti-ctor <game.json's constructor> -o config/games/<game>/functions.tsv
 ```
 
+To recompile one and test it in the harness (a "reference recompile": never a port build). `--game` takes the game's function table and extra entries from its folder, uses no hooks or tunables, and refuses code whose hash isn't the one in its `game.json`; without `--game` nothing changes:
+
+```
+python3 tools/recompile.py --game <game> --exheader <work>/exheader.bin --code <work>/code.bin -o build/recomp-<game>
+cd tools && python3 -m recomp.build ../build/recomp-<game> --harness --opt O0 -D RC_CHECK_RETURNS -o game.so
+python3 -m recomp.gametest --lib ../build/recomp-<game>/game.so --exheader <work>/exheader.bin --code <work>/code.bin \
+    --sample 2000 --cases 3 --report ../build/recomp-<game>/sample.tsv
+```
+
 MH3U: the first pass found 20,281 functions, `find_missing_functions.py` 4,510 candidates, the second pass 24,869 (800 DTI initialisers, 493 SDK); 347 candidates are left for a third pass.
 
 MHXX's v1.4 update (v4.8.0, title 0004000E00197100): a clean dump of the official update, decrypted and checked against its own NCCH hashes, has the same exheader and `code.bin` as the copy a fan translation repackaged (the translation changes only RomFS files). Its tables aren't made yet.
