@@ -134,3 +134,60 @@ def test_side_round_trip(tmp_path):
     assert back.name == "t"
     assert back.fns[1].seq == array("I", [3, 4, 5]) and back.fns[1].sites == [(0, 2)]
     assert back.fns[1].external == [0x500000] and back.fns[2].seq == array("I", [7])
+
+
+
+# vtable tiers: addresses are even, as ARM function entries are
+
+def test_vtable_slots_align_past_added_slots():
+    # one class: a has slots [A1, A2, A3]; b inserted a slot (B9) between them
+    a = Side("a", {0x100: fn(body(1)), 0x200: fn(body(2)), 0x300: fn(body(3))})
+    b = Side("b", {0x1000: fn(mutate(body(1), 1)), 0x9000: fn(body(7)),
+                   0x2000: fn(mutate(body(2), 2)), 0x3000: fn(mutate(body(3), 3))})
+    mp = Mapper(a, b)
+    assert mp.vtables([([0x100, 0x200, 0x300], [0x1000, 0x9000, 0x2000, 0x3000])]) == 3
+    assert mp.m == {0x100: 0x1000, 0x200: 0x2000, 0x300: 0x3000}
+    assert mp.how[0x200].startswith("slot")
+
+
+def test_vtable_slots_need_likeness_and_respect_the_map():
+    a = Side("a", {0x100: fn(body(1)), 0x200: fn(body(2))})
+    b = Side("b", {0x1000: fn(body(1)), 0x2000: fn(body(8))})     # slot 2 was rewritten
+    mp = Mapper(a, b)
+    mp.add(0x100, 0x1000, "identical")
+    assert mp.vtables([([0x100, 0x200], [0x1000, 0x2000])]) == 0
+    assert 0x200 not in mp.m
+
+
+def test_vtable_slot_votes_across_classes_and_thumb_bits():
+    # a slot function inherited by two classes votes twice; Thumb bits don't matter
+    a = Side("a", {0x100: fn(body(1)), 0x500: fn(body(5))})
+    b = Side("b", {0x1000: fn(mutate(body(1), 4)), 0x5000: fn(mutate(body(5), 5))})
+    mp = Mapper(a, b)
+    assert mp.vtables([([0x100, 0x500], [0x1000, 0x5001]),
+                       ([0x100, 0, 0x500], [0x1000, 0, 0x5001])]) == 2
+    assert mp.m == {0x100: 0x1000, 0x500: 0x5000}
+
+
+def test_brackets_place_a_rewritten_slot_by_position():
+    a = Side("a", {0x100: fn(body(1)), 0x200: fn(body(2)), 0x300: fn(body(3))})
+    b = Side("b", {0x1000: fn(body(1)), 0x2000: fn(mutate(body(2), 9, k=20)),   # ratio 0.47
+                   0x3000: fn(body(3))})
+    pairs = [([0x100, 0x200, 0x300], [0x1000, 0x2000, 0x3000])]
+    mp = Mapper(a, b)
+    mp.add(0x100, 0x1000, "identical")
+    mp.add(0x300, 0x3000, "identical")
+    assert mp.vtables(pairs) == 0
+    assert mp.brackets(pairs) == 1
+    assert mp.m[0x200] == 0x2000 and mp.how[0x200].startswith("bracket")
+
+
+def test_brackets_need_equal_gaps_and_some_likeness():
+    a = Side("a", {0x100: fn(body(1)), 0x200: fn(body(2)), 0x300: fn(body(3))})
+    b = Side("b", {0x1000: fn(body(1)), 0x2000: fn(body(8)), 0x2100: fn(body(9)),
+                   0x3000: fn(body(3))})
+    mp = Mapper(a, b)
+    mp.add(0x100, 0x1000, "identical")
+    mp.add(0x300, 0x3000, "identical")
+    assert mp.brackets([([0x100, 0x200, 0x300], [0x1000, 0x2000, 0x2100, 0x3000])]) == 0  # gaps 1, 2
+    assert mp.brackets([([0x100, 0x200, 0x300], [0x1000, 0x2000, 0x3000])]) == 0  # unlike bodies

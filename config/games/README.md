@@ -88,13 +88,15 @@ Slots run to the next known vtable; empty slots (0) count, trailing ones don't. 
 
 ## Function maps between games
 
-`tools/fnmap.py` maps functions between two games (or a game and a module) from their recompiler analysis: anchors where a function's normalised instructions are unique and identical in both, then calls at aligned positions in mapped pairs, then, for a given list, clear best matches by similarity. The outputs are derived from game code and stay outside the repository.
+`tools/fnmap.py` maps functions between two games (or a game and a module) from their recompiler analysis: anchors where a function's normalised instructions are unique and identical in both, then calls at aligned positions in mapped pairs. With `--vtables`, the slots of every class both games name are aligned in order (slots get added between versions) and mapped where the functions look alike (ratio ≥ 0.6). Next, slots between two mapped slots at equal distances in both games are mapped by position, if they still look a little alike (ratio ≥ 0.3). Last, for a given list, clear best matches by similarity. The outputs are derived from game code and stay outside the repository.
 
 ```
 python3 tools/fnmap.py side --game mh4u --exheader <work>/exheader.bin --code <work>/code.bin -o mh4u.side
 python3 tools/fnmap.py side --game mhxx --exheader ... --code ... -o mhxx.side
 python3 tools/fnmap.py side --module roEm001.cro --crs static.crs -o roEm001.side
-python3 tools/fnmap.py map mh4u.side mhxx.side [--similar addresses.txt] -o map.tsv
+python3 tools/fnmap.py map mh4u.side mhxx.side [--vtables mh4u.vt mhxx.vt] [--class-pair uEm001=uEm001_00] [--similar addresses.txt] -o map.tsv
 ```
 
-Accuracy, measured on MH4U v1.3.0 against MHXX v1.4 and MH3U: propagation recovers 29–31% of anchors held out from it, 100% (MHXX) and 99.1% (MH3U) of them correctly; a clear similarity match (ratio ≥ 0.7, 0.1 ahead of the next) agrees with propagation for 94% (MHXX, 151/160) and 99% (MH3U, 132/133) of a 300-pair sample. The content repository's `docs/design/monster-port.md` has what this gives for Rathian.
+Accuracy, measured on MH4U v1.3.0 against MHXX v1.4 and MH3U: propagation recovers 29–31% of anchors held out from it, 100% (MHXX) and 99.1% (MH3U) of them correctly; a clear similarity match (ratio ≥ 0.7, 0.1 ahead of the next) agrees with propagation for 94% (MHXX, 151/160) and 99% (MH3U, 132/133) of a 300-pair sample.
+
+With `--vtables` (30% of anchors held out, seed 1): MHXX recovers 281 of 541 held-out anchors (172 without vtables), MH3U 515 of 774 (273 without), all of them correctly; the whole maps grow from 3,540 to 7,542 pairs (MHXX) and from 3,967 to 6,866 (MH3U). Held-out anchors are 12 tokens or longer, so this doesn't test the many one- and two-instruction slot stubs, which align by position. Slots placed by position alone are right for 97.9% (MHXX) and 99.5% (MH3U) of mapped slots, left out one at a time. The content repository's `docs/design/monster-port.md` has what this gives for Rathian.

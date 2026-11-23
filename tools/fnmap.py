@@ -8,16 +8,19 @@ normalised instruction tokens (mnemonic and operand kinds; registers, immediates
 addresses dropped, since compilers and struct layouts differ between games) and its call
 sites (token index, callee).
 
-The map grows in three ways, each measured on MH4U against MH3U and MHXX (the monster-port
+The map grows in four ways, each measured on MH4U against MH3U and MHXX (the monster-port
 design doc in the content repository has the numbers):
   1. anchors: functions whose token sequence is unique in both games and identical;
   2. propagation: in a mapped pair, calls at aligned positions map their callees,
      when the votes agree and the callees look alike (ratio >= 0.4);
-  3. similarity, on request: the best candidate by a 4-gram index and alignment ratio,
+  3. vtable slots, on request: the slots of a class both games name (tools/mt_vtables.py),
+     aligned in order, map their functions when they look alike (ratio >= 0.6);
+     then slots bracketed by mapped slots at equal distances in both games map by position;
+  4. similarity, on request: the best candidate by a 4-gram index and alignment ratio,
      accepted only when clear (ratio >= 0.7 and 0.1 ahead of the next), then 2 again.
 
     side  --game mh4u|mh3u|mhxx [--module x.cro --crs static.crs] -o x.side
-    map   A.side B.side -o map.tsv [--similar ADDR_FILE]
+    map   A.side B.side -o map.tsv [--vtables A.vt B.vt] [--similar ADDR_FILE]
 
 The .side files and the map hold addresses and hashes only, but they are derived from game
 code: keep them outside the repository.
@@ -28,6 +31,7 @@ import argparse
 import collections
 import difflib
 import hashlib
+import itertools
 import os
 import pickle
 import struct
@@ -42,6 +46,8 @@ ANCHOR_MIN = 12          # tokens; shorter identical functions are too common to
 PROPAGATE_MIN = 0.5      # ratio a non-identical pair needs before its calls vote
 CALLEE_MIN = 0.4         # ratio a proposed callee pair needs
 CLEAR_MIN, CLEAR_MARGIN = 0.7, 0.1
+SLOT_MIN = 0.6           # ratio an aligned vtable slot pair needs (unless both are mapped already)
+BRACKET_MIN = 0.3        # ratio a slot pair placed by position alone needs
 NGRAM = 4
 VENEER = 0xE51FF004      # ldr pc, [pc, #-4]: a CRO's jump to the word after it
 
@@ -193,6 +199,7 @@ class Mapper:
         self.r: dict[int, int] = {}
         self.how: dict[int, str] = {}
         self._done: set[tuple[int, int]] = set()
+        self._ratios: dict[tuple[int, int], float] = {}
 
     def add(self, x: int, y: int, how: str) -> None:
         self.m[x], self.r[y], self.how[x] = y, x, how
@@ -252,6 +259,98 @@ class Mapper:
                 break
         return total
 
+    def _r(self, x: int, y: int) -> float:
+        key = (x, y)
+        r = self._ratios.get(key)
+        if r is None:
+            fa, fb = self.a.fns.get(x), self.b.fns.get(y)
+            r = 0.0 if fa is None or fb is None else 1.0 if fa.seq == fb.seq else ratio(fa.seq, fb.seq)[0]
+            self._ratios[key] = r
+        return r
+
+    def align_slots(self, sa: list[int], sb: list[int]) -> list[tuple[int, int, float]]:
+        """Pairs of slots of one class's vtables in the two games, aligned in order
+        (slots get added and dropped between versions); only pairs that score."""
+        def score(x, y):
+            if not x or not y:
+                return 0.3 if x == y else -0.3          # empty slots line up too
+            if x in self.m:
+                return 1.0 if self.m[x] == y else -1.0
+            if y in self.r:
+                return -1.0
+            return self._r(x, y) - 0.5
+        n, k = len(sa), len(sb)
+        best = [[0.0] * (k + 1) for _ in range(n + 1)]
+        for i in range(n):
+            row, nxt = best[i], best[i + 1]
+            for j in range(k):
+                nxt[j + 1] = max(row[j] + score(sa[i], sb[j]), row[j + 1], nxt[j])
+        out, i, j = [], n, k
+        while i and j:
+            sc = score(sa[i - 1], sb[j - 1])
+            if best[i][j] == best[i - 1][j - 1] + sc and sc > 0:
+                if sa[i - 1] and sb[j - 1]:
+                    out.append((sa[i - 1], sb[j - 1], sc))
+                i, j = i - 1, j - 1
+            elif best[i][j] == best[i - 1][j]:
+                i -= 1
+            else:
+                j -= 1
+        return out
+
+    def vtables(self, pairs: list[tuple[list[int], list[int]]]) -> int:
+        """Map the slots of vtables known to belong to the same class in both games
+        (mt_vtables.py; classes paired by name). A slot function inherited by many
+        classes collects a vote from each; the clear winner is taken, at SLOT_MIN."""
+        votes: dict[int, collections.Counter] = collections.defaultdict(collections.Counter)
+        for sa, sb in _even(pairs):
+            for x, y, _ in self.align_slots(sa, sb):
+                if x not in self.m:
+                    votes[x][y] += 1
+        n = 0
+        for x, cnt in votes.items():
+            (y, c), *rest = cnt.most_common()
+            if y in self.r or (rest and rest[0][1] * 2 > c) or self._r(x, y) < SLOT_MIN:
+                continue
+            self.add(x, y, f"slot {self._r(x, y):.2f}")
+            n += 1
+        return n
+
+    def brackets(self, pairs: list[tuple[list[int], list[int]]]) -> int:
+        """An unmapped slot between two mapped slots of the same class, whose gap is the
+        same size in both games, takes the slot at the same offset: position alone, for
+        functions rewritten past recognition (leave-one-out on mapped slots: 97.8% right
+        against MHXX, 99.5% against MH3U). Lengths must be within a factor of 3, and the
+        pair must still look a little alike (BRACKET_MIN): an inherited slot in one game
+        against an override in the other is the same slot, not the same function."""
+        votes: dict[int, collections.Counter] = collections.defaultdict(collections.Counter)
+        for sa, sb in _even(pairs):
+            pos = {}
+            for i, x in enumerate(sa):
+                y = self.m.get(x) if x else None
+                js = [j for j, z in enumerate(sb) if y is not None and z == y]
+                if len(js) == 1:
+                    pos[i] = js[0]
+            keys = sorted(pos)
+            for i0, i1 in itertools.pairwise(keys):
+                if pos[i1] - pos[i0] != i1 - i0:
+                    continue
+                for i in range(i0 + 1, i1):
+                    x, y = sa[i], sb[pos[i0] + i - i0]
+                    if x and y and x not in self.m and y not in self.r:
+                        votes[x][y] += 1
+        n = 0
+        for x, cnt in votes.items():
+            (y, _), *rest = cnt.most_common()
+            if rest or y in self.r or x not in self.a.fns or y not in self.b.fns:
+                continue
+            la, lb = len(self.a.fns[x].seq), len(self.b.fns[y].seq)
+            if 3 * min(la, lb) < max(la, lb) or self._r(x, y) < BRACKET_MIN:
+                continue
+            self.add(x, y, f"bracket {self._r(x, y):.2f}")
+            n += 1
+        return n
+
     def similar(self, wanted: list[int]) -> int:
         """Clear best matches for the given unmapped functions of side A, then propagation."""
         index = NgramIndex(self.b)
@@ -264,6 +363,11 @@ class Mapper:
                 self.add(x, best[0][1], f"similar {best[0][0]:.2f}")
                 n += 1
         return n + self.propagate()
+
+
+def _even(pairs):
+    """Slots as function entries: the Thumb bit dropped."""
+    return [([x & ~1 for x in sa], [y & ~1 for y in sb]) for sa, sb in pairs]
 
 
 def is_clear(best: list[tuple[float, int]]) -> bool:
@@ -360,6 +464,16 @@ def cmd_map(args) -> int:
     a, b = load_side(args.a), load_side(args.b)
     mp = Mapper(a, b)
     print(f"anchors: {mp.anchors()}")
+    if args.vtables:
+        import mt_vtables
+        va, vb = (mt_vtables.read_tsv(p) for p in args.vtables)
+        names = [(n, n) for n in sorted(va.keys() & vb.keys())]
+        names += [tuple(p.split("=", 1)) for p in args.class_pair]
+        pairs = [(va[x].slots, vb[y].slots) for x, y in names
+                 if x in va and y in vb and va[x].slots and vb[y].slots]
+        print(f"vtable slots ({len(pairs)} classes): {mp.vtables(pairs)}")
+        print(f"propagated: {mp.propagate()}")
+        print(f"bracketed slots: {mp.brackets(pairs)}")
     print(f"propagated: {mp.propagate()}")
     if args.similar:
         with open(args.similar) as f:
@@ -386,6 +500,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("a")
     p.add_argument("b")
     p.add_argument("--similar", help="file of side-A addresses to also match by similarity")
+    p.add_argument("--vtables", nargs=2, metavar=("A.vt", "B.vt"),
+                   help="mt_vtables.py output for each side: align the slots of same-named classes")
+    p.add_argument("--class-pair", action="append", default=[], metavar="A=B",
+                   help="with --vtables, also align class A's slots with class B's")
     p.add_argument("-o", "--output", required=True)
     args = ap.parse_args(argv)
     return cmd_side(args) if args.cmd == "side" else cmd_map(args)
