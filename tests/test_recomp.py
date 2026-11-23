@@ -606,3 +606,26 @@ def test_indirect_call_to_one_leaves_through_rc_call(tmp_path):
     st.r[0] = 1
     r = tester.nat.run(base, False, st, budget=10000)
     assert (r.status, r.info0) == (ST_NOFUNC, 1), r
+
+
+def test_literals_of_data_pointer_functions_are_followed():
+    """A function that only a vtable reaches loads another code address from its literal
+    pool (MH3U's array constructors pass the element constructor to the array helper this
+    way). The first scan finds the vtable's function; its literal is found in a second round."""
+    import struct
+
+    import recompile
+    from recomp.analysis import Analyzer, Image
+    base = 0x00100000
+    code = bytearray(0x200)
+    a, f, g = base, base + 0x10, base + 0x20
+    struct.pack_into("<I", code, 0, 0xE12FFF1E)                                # a: bx lr
+    struct.pack_into("<4I", code, 0x10, 0xE59F1004, 0xE5801000, 0xE12FFF1E, g)  # f: ldr r1, =g; str r1, [r0]; bx lr
+    struct.pack_into("<2I", code, 0x20, 0xE3A00000, 0xE12FFF1E)                # g: mov r0, #0; bx lr
+    struct.pack_into("<I", code, 0x100, f)                                     # a vtable holding f
+    img = Image(bytes(code), base, 0x100)
+    an = Analyzer(img)
+    first = an.analyze_all({a: "arm"})
+    cover, fall_into = recompile.code_cover(first)
+    assert recompile.data_pointer_entries(img, an, [(base + 0x100, 4)], {a: "arm"}, cover, fall_into) == {f: "arm"}
+    assert recompile.data_pointer_closure(img, an, [(base + 0x100, 4)], first) == {f: "arm", g: "arm"}

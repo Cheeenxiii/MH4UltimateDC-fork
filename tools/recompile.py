@@ -243,6 +243,50 @@ def pc_relative_sums(funcs: dict) -> set[int]:
     return out
 
 
+
+def analyze_more(an: Analyzer, new: dict[int, str], known: dict[int, str]) -> dict:
+    """Analyse the entries in `new` and the callees they reach that `known` doesn't hold
+    (those were analysed already)."""
+    entries = {**known, **new}
+    funcs = {}
+    queue = sorted(new)
+    while queue:
+        a = queue.pop()
+        if a in funcs:
+            continue
+        f = funcs[a] = an.analyze(a, entries[a], entries)
+        for t, m in f.calls:
+            if t not in entries and an.plausible_entry(t, m):
+                entries[t] = m
+                queue.append(t)
+    return funcs
+
+
+def data_pointer_closure(img: Image, an: Analyzer, segments: list[tuple[int, int]], first: dict) -> dict[int, str]:
+    """data_pointer_entries over the data and the literals of `first`, then again over the
+    literals of the functions that found, until nothing new turns up. A function only a
+    vtable reaches can load another code address: MH3U's array constructors pass their
+    element constructor to the runtime's array helper from a literal, and those can nest."""
+    cover, fall_into = code_cover(first)
+    known = {a: f.mode for a, f in first.items()}
+    literals = {i.literal for f in first.values() for i in f.insns.values() if i.literal is not None}
+    literals |= pc_relative_sums(first)
+    found = data_pointer_entries(img, an, segments, known, cover, fall_into, literals)
+    new = dict(found)
+    while new:
+        more = analyze_more(an, new, known)
+        known.update({a: f.mode for a, f in more.items()})
+        c, fi = code_cover(more)
+        for m in cover:
+            cover[m] |= c[m]
+            fall_into[m] |= fi[m]
+        lits = {i.literal for f in more.values() for i in f.insns.values() if i.literal is not None}
+        lits |= pc_relative_sums(more)
+        new = data_pointer_entries(img, an, [], known, cover, fall_into, lits - literals)
+        literals |= lits
+        found.update(new)
+    return found
+
 INIT_LOOP = struct.pack("<5H", 0x6820, 0x1900, 0x4780, 0x1D24, 0x42AC)  # ldr r0,[r4]; adds r0,r4; blx r0; adds r4,#4; cmp r4,r5
 
 
@@ -316,12 +360,7 @@ def recompile(img: Image, entries: dict[int, str], out: str, log=print,
         log(f"  ignoring {len(outside)} entry points outside .text")
     extra = {}
     if data_segments:
-        first = an.analyze_all(entries)
-        cover, fall_into = code_cover(first)
-        known = {a: f.mode for a, f in first.items()}
-        literals = {i.literal for f in first.values() for i in f.insns.values() if i.literal is not None}
-        literals |= pc_relative_sums(first)
-        extra = data_pointer_entries(img, an, data_segments, known, cover, fall_into, literals)
+        extra = data_pointer_closure(img, an, data_segments, an.analyze_all(entries))
         entries = {**entries, **extra}
         log(f"  {len(extra)} entry points found through data pointers")
     funcs = an.analyze_all(entries, progress=lambda n, m: log(f"  analysed {n}/{m}"))
