@@ -33,6 +33,13 @@ void Close(void* library) {
     delete static_cast<Common::DynamicLibrary*>(library);
 }
 
+// MT Framework's allocator table (MtAllocator*[64], indexed by a class's allocator category;
+// entry 0 is the default heap): the same address in USA v1.3.0 and EUR v1.1.0, whose data
+// segments match (config/symbols.txt, "Heap").
+constexpr u32 MT_ALLOCATORS = 0x010bdc88;
+constexpr u64 MH4U_USA = 0x0004000000126300;
+constexpr u64 MH4U_EUR = 0x0004000000126100;
+
 void Sink(int level, const std::string& line) {
     switch (level) {
     case MH4U_LOG_DEBUG:
@@ -61,7 +68,11 @@ std::string ListPath(const std::string& library_path) {
 RCodeInfo Begin(const RCodeInfo& info) {
     PluginHost& host = PluginHost::Get();
     host.SetLog(&Sink);
-    return host.Begin(info, Loader{&Open, &Symbol, &Close});
+    RCodeInfo port = host.Begin(info, Loader{&Open, &Symbol, &Close});
+    const u64 game = info.title_id & ~0x0000000F00000000ull;   // an update's id counts as its game's
+    const bool mh4u = game == MH4U_USA || game == MH4U_EUR;
+    host.SetGuestHeap(mh4u ? MT_ALLOCATORS : 0, &rc_call);
+    return port;
 }
 
 std::vector<std::string> Load(const std::string& library_path) {
