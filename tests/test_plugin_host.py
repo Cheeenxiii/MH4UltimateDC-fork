@@ -5,7 +5,8 @@ rh_set_hook harness); the plugin host is built into a small shim library; the sa
 (tools/plugin_sample/sample_plugin.c) is built twice, as two mods. Checked: chain order (the
 last mod first, then the port's own hook, then the game's function), skipping the original,
 per-frame calls with guest memory writes, a hook name the library lacks, an init that fails
-(its hooks are taken back), and the plugin list format."""
+(its hooks are taken back), the plugin list format, and guest memory from the game's heap
+(alloc/free through an MtAllocator-shaped bump heap in the test program)."""
 from __future__ import annotations
 
 import ctypes
@@ -71,6 +72,7 @@ int ph_load(const char* tsv) {
     g_log.insert(g_log.end(), lines.begin(), lines.end());
     return (int)PluginHost::Get().PluginCount();
 }
+void ph_set_heap(u32 table, void (*call)(RCtx*, u32)) { PluginHost::Get().SetGuestHeap(table, call); }
 int ph_log_count(void) { return (int)g_log.size(); }
 const char* ph_log_line(int i) { return g_log[i].c_str(); }
 void ph_reset(void) { PluginHost::Get().Reset(); g_addrs.clear(); g_names.clear(); }
@@ -117,6 +119,7 @@ def env(built):
     shim.ph_begin.restype = ctypes.c_void_p
     shim.ph_load.argtypes = [ctypes.c_char_p]
     shim.ph_log_line.restype = ctypes.c_char_p
+    shim.ph_set_heap.argtypes = [ctypes.c_uint32, ctypes.c_void_p]
     shim.ph_reset()
     points = sorted([(names["add1"] & ~1, "add1"), (names["thumb_sub"] & ~1, "thumb_sub"),
                      (names["screen_rows"] & ~1, "sMhMain::frame")])
@@ -164,6 +167,24 @@ def env(built):
 
         def read32(self, addr):
             return int.from_bytes(m.read(addr, 4), "little")
+
+        def write32(self, addr, value):
+            m.write(addr, (value & 0xFFFFFFFF).to_bytes(4, "little"))
+
+        def heap(self, arena_size=0x1000):
+            """An MtAllocator-shaped bump heap at the end of the code region, its table entry
+            given to the host (call after begin, which forgets it). Returns the heap's address
+            and its arena's start: the heap's fields are vtable, next, end, frees, last_freed."""
+            top = 0x00100000 + size
+            table, heap, vtable = top - 0x100, top - 0xC0, top - 0x80
+            arena = top - 0x100 - arena_size
+            self.write32(table, heap)
+            for i, v in enumerate([vtable, arena, arena + arena_size, 0, 0]):
+                self.write32(heap + 4 * i, v)
+            self.write32(vtable + 0x20, names["heap_alloc"])
+            self.write32(vtable + 0x38, names["heap_free"])
+            shim.ph_set_heap(table, ctypes.cast(m.lib.rc_call, ctypes.c_void_p).value)
+            return heap, arena
 
     yield Env()
     shim.ph_reset()
@@ -275,3 +296,49 @@ def test_list_written_by_mod_hooks(env, built, tmp_path):
     env.begin()
     assert shim.ph_load(text.encode()) == 1
     assert env.call("add1", 5) == 306
+
+
+def test_alloc_frame_counter_on_the_game_heap(env):
+    env.begin()
+    heap, arena = env.heap()
+    env.load(("Mod A", "a", {"hook": "add1", "value": "1", "frames_at": "alloc"}))
+    for _ in range(3):
+        assert env.call("screen_rows") == 400  # the game's registers are back after the calls
+    # the 64-byte scratch block came first (and was freed), then the 4-byte counter
+    assert env.read32(heap + 12) == 1 and env.read32(heap + 16) == arena
+    counter = arena + 64
+    assert env.read32(heap + 4) == counter + 4
+    assert env.read32(counter) == 3
+    assert any(f"Mod A: sample plugin: frame counter at 0x{counter:08x}" in line for line in env.log()), env.log()
+
+
+def test_alloc_and_free_inside_a_hook_keep_registers(env):
+    port = env.begin()
+    env.port_hook(port, "add1", 1000)
+    heap, arena = env.heap()
+    env.load(("Mod A", "a", {"hook": "add1", "value": "100", "alloc_in_hook": "1"}))
+    assert env.call("add1", 5) == 1106         # r0 (the argument) survived the allocation
+    assert env.call("twice_add1", 5) == 2212   # and so did the game caller's registers
+    assert env.read32(heap + 12) == 2          # each run freed its block
+    assert env.read32(heap + 16) == arena + 16  # 8 bytes at 16-byte alignment (align 0)
+
+
+def test_alloc_full_heap_returns_zero(env):
+    env.begin()
+    heap, _ = env.heap(arena_size=32)          # room for the scratch block? no: 64 > 32
+    env.load(("Mod A", "a", {"hook": "add1", "frames_at": "alloc"}))
+    env.call("screen_rows")
+    assert env.read32(heap + 12) == 0          # free(0) doesn't reach the game
+    assert env.read32(heap + 4) == env.read32(heap + 8) - 32 + 4   # the counter still fits
+    assert any("frame counter at" in line for line in env.log())
+
+
+def test_alloc_without_a_known_heap(env):
+    env.begin()                                # no heap: another game, or a test without one
+    env.load(("Mod A", "a", {"hook": "add1", "value": "1", "frames_at": "alloc"}))
+    env.call("screen_rows")
+    env.call("screen_rows")
+    log = env.log()
+    assert any("sample plugin: no guest memory for the frame counter" in line for line in log), log
+    assert sum("no guest memory for plugins" in line for line in log) == 1, log   # said once
+    assert env.call("add1", 5) == 7

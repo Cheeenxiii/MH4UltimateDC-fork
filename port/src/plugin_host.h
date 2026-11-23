@@ -9,6 +9,12 @@
 // hook, then the game's function. Points that no plugin hooks keep the port's hook as it is,
 // at no cost. The port's hooks reach the code library through Begin()'s set_hook, which
 // records them here, so they keep working under a chain.
+//
+// Guest memory (alloc/free, ABI 2) comes from the game's default heap: SetGuestHeap gives the
+// address of MT Framework's allocator table (one MtAllocator* per allocator category; entry
+// 0 is the default heap) and the function that runs guest code (rc_call in the port). The
+// host calls the allocator's virtual alloc (+0x20) and free (+0x38) like the game does, and
+// puts the guest's registers back afterwards.
 #pragma once
 
 #include <array>
@@ -54,6 +60,10 @@ class PluginHost {
 public:
     static constexpr size_t SLOTS = 256;
     static constexpr const char* FRAME_HOOK = "sMhMain::frame";
+    // MtAllocator's virtual functions (USA v1.3.0 and EUR v1.1.0, docs: config/symbols.txt).
+    static constexpr u32 ALLOC_VCALL = 0x20;   // void* alloc(this, u32 size, u32 align)
+    static constexpr u32 FREE_VCALL = 0x38;    // void free(this, void* p), p may be null
+    using GuestCall = void (*)(RCtx* ctx, u32 target);
 
     static PluginHost& Get() {
         static PluginHost host;
@@ -86,6 +96,14 @@ public:
         sink_ = sink;
     }
 
+    /// Where the game keeps its allocator table, and how to run guest code (0 / null: the
+    /// game's heap is unknown, alloc returns 0). Set after Begin, which forgets it.
+    void SetGuestHeap(u32 allocator_table, GuestCall call) {
+        heap_table_ = allocator_table;
+        guest_call_ = call;
+        heap_warned_ = false;
+    }
+
     size_t PluginCount() const {
         return plugins_.size();
     }
@@ -108,6 +126,9 @@ public:
         frame_fns_.clear();
         frame_hooked_ = false;
         info_ = {};
+        heap_table_ = 0;
+        guest_call_ = nullptr;
+        heap_warned_ = false;
     }
 
 private:
@@ -245,6 +266,8 @@ private:
         t.log = &ApiLog;
         t.config = &ApiConfig;
         t.on_frame = &ApiOnFrame;
+        t.alloc = &ApiAlloc;
+        t.free = &ApiFree;
         // Hooks a failed init asked for are taken back: remember the chains as they were.
         std::map<u32, size_t> before;
         for (auto& [addr, chain] : chains_) {
@@ -385,6 +408,83 @@ private:
         return 1;
     }
 
+    // ── guest memory ──────────────────────────────────────────────────────────
+
+    /// Runs the guest function at `target` with r0-r2 = args, and returns its r0. Everything
+    /// the guest's caller can see (core and VFP registers, flags, the fall-through return)
+    /// is put back as it was; the call uses the guest's stack below its current sp.
+    u32 CallGuest(RCtx* ctx, u32 target, u32 a0, u32 a1, u32 a2) {
+        u32 regs[16];
+        std::memcpy(regs, ctx->r, sizeof regs);
+        const u32 flags[7] = {ctx->fn, ctx->fz, ctx->fc, ctx->fv, ctx->fq, ctx->ge, ctx->fpscr};
+        auto vfp = ctx->f;
+        const u32 expect_next = ctx->expect_next;
+        ctx->expect_next = 0;
+        ctx->r[0] = a0;
+        ctx->r[1] = a1;
+        ctx->r[2] = a2;
+        ctx->r[14] = regs[14];   // a code address of the game's (only the interpreter reads it)
+        guest_call_(ctx, target);
+        const u32 result = ctx->r[0];
+        std::memcpy(ctx->r, regs, sizeof regs);
+        ctx->fn = flags[0];
+        ctx->fz = flags[1];
+        ctx->fc = flags[2];
+        ctx->fv = flags[3];
+        ctx->fq = flags[4];
+        ctx->ge = flags[5];
+        ctx->fpscr = flags[6];
+        ctx->f = vfp;
+        ctx->expect_next = expect_next;
+        return result;
+    }
+
+    /// The default allocator and its virtual function at `vcall`, or false (logged once).
+    bool HeapFunction(RCtx* ctx, u32 vcall, u32& allocator, u32& fn) {
+        allocator = heap_table_ && guest_call_ ? rd32(ctx, heap_table_) : 0;
+        const u32 vtable = allocator ? rd32(ctx, allocator) : 0;
+        fn = vtable ? rd32(ctx, vtable + vcall) : 0;
+        if (fn) {
+            return true;
+        }
+        if (!heap_warned_) {
+            heap_warned_ = true;
+            const std::string why = !heap_table_ || !guest_call_
+                                        ? "the port doesn't know this game's heap"
+                                        : "the game's heap isn't set up yet";
+            if (sink_) {
+                sink_(MH4U_LOG_WARNING, "host: no guest memory for plugins (" + why + ")");
+            }
+        }
+        return false;
+    }
+
+    static u32 ApiAlloc(MH4UCall* call, u32 size, u32 align) {
+        PluginHost& h = Get();
+        if (!call || !call->ctx || size == 0) {
+            return 0;
+        }
+        if (align == 0) {
+            align = 16;
+        }
+        if (align & (align - 1)) {
+            return 0;
+        }
+        u32 allocator, fn;
+        if (!h.HeapFunction(call->ctx, ALLOC_VCALL, allocator, fn)) {
+            return 0;
+        }
+        return h.CallGuest(call->ctx, fn, allocator, size, align);
+    }
+
+    static void ApiFree(MH4UCall* call, u32 addr) {
+        PluginHost& h = Get();
+        u32 allocator, fn;
+        if (call && call->ctx && addr && h.HeapFunction(call->ctx, FREE_VCALL, allocator, fn)) {
+            h.CallGuest(call->ctx, fn, allocator, addr, 0);
+        }
+    }
+
     RCodeInfo info_{};
     Loader loader_{};
     std::map<u32, std::unique_ptr<Chain>> chains_;
@@ -395,6 +495,9 @@ private:
     bool frame_hooked_ = false;
     std::vector<std::string>* log_ = nullptr;
     void (*sink_)(int, const std::string&) = nullptr;
+    u32 heap_table_ = 0;
+    GuestCall guest_call_ = nullptr;
+    bool heap_warned_ = false;
 };
 
 /// Reads <program id>.plugins.tsv (tools/mod_hooks.py writes it): `plugin<TAB>mod<TAB>library

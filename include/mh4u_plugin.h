@@ -22,6 +22,13 @@
  * on the emulation thread. The API never hands out the recompiler's own structures, so the
  * port can change them without breaking plugins.
  *
+ * Guest memory: alloc and free (ABI 2) take blocks from the game's own default heap, the
+ * allocator the engine's global allocations use, by calling the game's allocator on the
+ * emulation thread. They take an MH4UCall, so they are for hooks and frame calls, not init:
+ * a plugin that needs memory from the start allocates in its first frame call. A plugin
+ * that should also run on an ABI 1 host checks host->size before using them (as
+ * tools/plugin_sample/sample_plugin.c does).
+ *
  * Native plugins run arbitrary code on the player's PC: the launcher is to warn before turning
  * one on, and the mod catalog to label them (docs/MODS.md).
  *
@@ -39,7 +46,7 @@ extern "C" {
 /* Raised when a function is added to the end of MH4UPluginHost (plugins check host->size
  * before using a newer member) or when a member's meaning changes (a plugin built for a
  * newer ABI than the host's refuses to start). */
-#define MH4U_PLUGIN_ABI 1
+#define MH4U_PLUGIN_ABI 2   /* 2: alloc, free */
 #define MH4U_PLUGIN_INIT_SYMBOL "mh4u_plugin_init"
 
 #if defined(_WIN32)
@@ -100,6 +107,16 @@ typedef struct MH4UPluginHost {
     /* Calls fn once per game frame, at the start of the engine's frame (sMhMain::frame), on
      * the emulation thread. Returns 0 if the code library has no such hook point. Init only. */
     int (*on_frame)(const struct MH4UPluginHost *self, MH4UFrameFn fn, void *user);
+
+    /* ── ABI 2 ── */
+
+    /* Allocates `size` bytes of guest memory from the game's default heap, aligned to `align`
+     * bytes (a power of two; 0 means 16), and returns its guest address, or 0 when the heap is
+     * full or unknown (another game, or the game hasn't set its heap up yet: logged once).
+     * The block's contents are undefined. The game's own registers are left as they were. */
+    uint32_t (*alloc)(MH4UCall *call, uint32_t size, uint32_t align);
+    /* Gives back a block from alloc (0 is ignored). */
+    void (*free)(MH4UCall *call, uint32_t addr);
 } MH4UPluginHost;
 
 typedef int (*MH4UPluginInit)(const MH4UPluginHost *host, uint32_t abi);

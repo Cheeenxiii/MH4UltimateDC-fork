@@ -26,6 +26,18 @@ __attribute__((noinline)) int jump_to(fp f, int x) { return f(x); }
 __attribute__((noinline)) int call_jump(fp f, int x) { return jump_to(f, x) + 1; }
 __attribute__((noinline)) int screen_rows(void) { return 400; }
 __attribute__((noinline)) int clamp_rows(int y) { return y > 400 ? 400 : y; }
+/* a bump heap shaped like MT Framework's MtAllocator, for the plugins' alloc/free
+   (tests/test_plugin_host.py): vtable +0x20 alloc(this, size, align), +0x38 free(this, p) */
+struct heap { const unsigned *vt; unsigned next, end, frees, last_freed; };
+__attribute__((noinline)) unsigned heap_alloc(struct heap *h, unsigned size, unsigned align) {
+    unsigned p = (h->next + align - 1) & ~(align - 1);
+    if (p + size > h->end) return 0;
+    h->next = p + size;
+    return p;
+}
+__attribute__((noinline)) void heap_free(struct heap *h, unsigned p) {
+    if (p) { h->frees++; h->last_freed = p; }
+}
 """
 
 
