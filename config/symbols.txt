@@ -179,3 +179,10 @@
 0x00b0d718 Player::cameraDirectionHeld    # (player, n): bit n of [player+0xe30]+0x3cc (2 up, 4 down, 6 left, 8 right)
 0x00bff694 sMhCamera::resetBehindPlayer   # L: yaw = player angle + 0x8000 (target camera: 0x00c040fc)
 0x00d0cc00 sMhCamera::easeAngle           # (this, target, now, speed): step of a u16 angle toward its target
+# Monster ids (mh-ultimate-collection docs/design/id-tables.md): ids 0..123, id N runs uEmN when it has its own class
+0x006901f4 createEnemy                    # (owner, id, a2, a3): first free of 32 slots at owner+0x18; switch on id < 0x7c (jump table 0x00690278, 124 words), each case calls its class's operator new (0x8d90, 0x10) and init; id 0 uEmXXX (0x8d88)
+0x00689490 loadEnemyData                  # (this, id, slot): rEnemyData from enemyDataPathIndex[id], appended to the array at this+0x13a4, stored in enemyDataById[id][slot] (through the pointer at 0x00f3a020)
+0x00efc268 enemyDataPathIndex             # const ptr[124], by monster id: row of enemyDataPaths; id 0 null; ids without files of their own point to a neighbour's row
+0x00efbef8 enemyDataPaths                 # const {char *path; char *path2;}[110], "enemy\emNNN\data\emNNN" for each emNNN with files, both pointers the same
+0x00f3a024 enemyDataById                  # u32 *[124], by monster id: each to a 2-word record of loaded rEnemyData (records from 0x00f39c90, some shared); 0x00f3a020 points here
+0x0068df70 releaseEnemyData               # (this): for each id < 0x7c, releases the rEnemyData in this+0x13a4 that enemyDataById points to and clears the slots
