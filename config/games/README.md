@@ -119,3 +119,29 @@ A module's calls into the static code go through veneers, so a module's side rec
 Accuracy, measured on MH4U v1.3.0 against MHXX v1.4 and MH3U: propagation recovers 29–31% of anchors held out from it, 100% (MHXX) and 99.1% (MH3U) of them correctly; a clear similarity match (ratio ≥ 0.7, 0.1 ahead of the next) agrees with propagation for 94% (MHXX, 151/160) and 99% (MH3U, 132/133) of a 300-pair sample.
 
 With `--vtables` (30% of anchors held out, seed 1): MHXX recovers 281 of 541 held-out anchors (172 without vtables), MH3U 515 of 774 (273 without), all of them correctly; the whole maps grow from 3,540 to 7,542 pairs (MHXX) and from 3,967 to 6,866 (MH3U). Held-out anchors are 12 tokens or longer, so this doesn't test the many one- and two-instruction slot stubs, which align by position. Slots placed by position alone are right for 97.9% (MHXX) and 99.5% (MH3U) of mapped slots, left out one at a time. The content repository's `docs/design/monster-port.md` has what this gives for Rathian.
+
+## Monster actions
+
+MH4U, MH3U and MHXX run a monster's current action the same way. A dispatcher reads two bytes, a category and an index, and jumps through a table on the category. Each category then switches on the index, through a jump table or a compare chain, to a case block. Most case blocks tail-call the action's handler, some with constants in r1-r3. `tools/monster_actions.py list` walks a dispatcher down to every (category, index) and its handler. `pairs` lines up two games' inventories by action id and keeps a handler pair when each handler of A meets exactly one handler of B.
+
+```
+python3 tools/monster_actions.py list --exheader <work>/exheader.bin --code <work>/code.bin --dispatcher 0x6e9cac --range 0x6d4f80 0x6ec8e0 -o mh4u_uEm001.tsv
+python3 tools/monster_actions.py list --module roEm001.cro --crs static.crs --dispatcher 0x2009704 -o mhxx_roEm001.tsv
+python3 tools/monster_actions.py pairs mh4u_uEm001.tsv mhxx_roEm001.tsv -o pairs.tsv
+```
+
+Rathian's dispatchers:
+
+| Game | Class | Dispatcher | Category, index | Categories |
+|---|---|---|---|---|
+| MH4U v1.3.0 | `uEm001` (vtable slot 44) | 0x006e9cac | bytes 0x1ca, 0x1cb of the struct at `this+0xe28` | 14 |
+| MH3U | `uEm002` (vtable slot 47) | 0x00687d30 | bytes 0xdf, 0xe0 of the struct at `this+0x1a48` | 14 |
+| MHXX v1.4 | `uEm001_00`, in `roEm001` loaded at 0x02000000 | 0x02009704 | bytes at `this+0x6bf0`, `this+0x6bf1` | 18 |
+
+| | MH4U | MH3U | MHXX |
+|---|---|---|---|
+| actions | 342 | 191 | 301 |
+| distinct handlers | 97 | 66 | 83 |
+| case blocks that tail-call a handler | 307 | 182 | 274 |
+
+The action ids are shared. Of MHXX's 301 actions, 273 have an MH4U action with the same id. Of the 197 shared actions whose case blocks pass constants, 194 pass the same ones in both games. Each of MH4U's 80 handlers that a shared action reaches meets exactly one MHXX handler, including the 57 MH4U handlers that serve several actions. With MH3U, 174 ids are shared, 104 pass the same constants, and 63 handlers pair (one MH4U handler meets two). This is consistency, not an independent check: before this tool, only one of the handler pairs was in a function map. The ids are equal; whether each pair is the same move in game is for an in-game check.
