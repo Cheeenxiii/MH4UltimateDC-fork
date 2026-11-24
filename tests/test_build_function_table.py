@@ -73,15 +73,3 @@ def test_fnstatus_set_and_show(tmp_path, capsys):
     assert (row["status"], row["batch"], row["name"]) == ("done", "pilot-0", "add_two")
     fnstatus.main(["--table", str(table), "summary"])
     assert "decompiled bytes: 0x8" in capsys.readouterr().out
-
-
-def test_text_only_drops_functions_outside_text():
-    code, header, funcs = setup()
-    stray = {"address": f"0x{BASE + 0x1000:08x}", "size": "0x1", "mode": "arm"}   # in .rodata
-    assert len(bft.build(code, header, [*funcs, stray], {}, CTOR, {})) == len(funcs) + 1
-    rows = bft.build(code, header, [*funcs, stray], {}, CTOR, {}, text_only=True)
-    assert [r["address"] for r in rows] == [f["address"] for f in funcs]
-
-
-def test_empty_symbols_path_names_nothing():
-    assert bft.load_symbols("") == {}

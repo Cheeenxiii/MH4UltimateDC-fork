@@ -233,64 +233,6 @@ def test_vector_mode_and_multi_return_helpers(tmp_path):
     assert verdicts[mc][2] == 48
 
 
-# RVCT's Thumb switch helper (ARM code, as in MHXX): the Thumb caller does `blx helper` with
-# the case index in r3 and a byte table after the call (case count, then one entry per case
-# and a default); the helper jumps to the chosen case and never returns to LR.
-SWITCH8 = r"""
-    .syntax unified
-    .arm
-    .text
-    .global switch8
-    .type switch8, %function
-switch8:
-    ldrb    ip, [lr, #-1]
-    cmp     r3, ip
-    ldrbhs  r3, [lr, ip]
-    ldrblo  r3, [lr, r3]
-    add     ip, lr, r3, lsl #1
-    bx      ip
-
-    .thumb
-    .global sw_caller
-    .type sw_caller, %function
-    .thumb_func
-sw_caller:
-    push    {r4, lr}
-    adds    r4, r1, #0
-    movs    r3, r0
-    blx     switch8
-tbl:
-    .byte   3
-    .byte   (c0 - tbl) / 2, (c1 - tbl) / 2, (c2 - tbl) / 2, (cd - tbl) / 2
-    .balign 2
-c0: adds    r0, r4, #5
-    pop     {r4, pc}
-c1: subs    r0, r4, #7
-    pop     {r4, pc}
-c2: lsls    r0, r4, #2
-    pop     {r4, pc}
-cd: mvns    r0, r4
-    pop     {r4, pc}
-"""
-
-
-def test_thumb_switch_helper(tmp_path):
-    res, entries, verdicts = _recompile_and_compare(tmp_path, {"s.S": SWITCH8}, cases=48)
-    by_name = {}
-    for line in subprocess.run(["llvm-readelf", "-s", str(tmp_path / "p.elf")], capture_output=True,
-                               text=True, check=True).stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 8 and parts[3] == "FUNC":
-            by_name[parts[7]] = int(parts[1], 16)
-    funcs = res["funcs"]
-    sw, sc = by_name["switch8"], by_name["sw_caller"] & ~1
-    assert funcs[sw].mret
-    (conts,) = funcs[sc].mret_calls.values()
-    assert len(conts) == 4 and all(c in funcs[sc].insns for c in conts)
-    assert verdicts[sc][0] == "pass", verdicts[sc]
-    assert verdicts[sc][2] == 48
-
-
 # Hand-written code in the style of the game's video decoder: LR set once by `add lr, pc`,
 # then a conditional branch or a jump through a table of offsets is the call; a routine
 # picks its tail through a table of negative offsets placed after the code it jumps to,
@@ -485,32 +427,6 @@ def test_data_pointer_to_a_function_another_one_falls_into():
     assert found == {b: "arm"}
 
 
-def test_position_independent_callback_and_thumb_thunk():
-    """MHXX installs a Thumb callback with `ldr r1, =off; add r1, pc` (no word anywhere holds
-    its address), and reaches Thumb code from an ARM thunk with `add ip, pc, #1; bx ip`."""
-    import struct
-    import recompile
-    from recomp.analysis import Analyzer, Image
-    base = 0x00100000
-    code = bytearray(0x100)
-    setup, cb, thunk, body = base, base + 0x10, base + 0x20, base + 0x30
-    struct.pack_into("<4H", code, 0, 0x4901, 0x4479, 0x60C1, 0x4770)   # ldr r1, [pc, #4]; add r1, pc; str r1, [r0, #12]; bx lr
-    struct.pack_into("<I", code, 8, (cb + 1 - (setup + 6)) & 0xFFFFFFFF)  # add's PC is its address + 4
-    struct.pack_into("<2H", code, 0x10, 0x6900, 0x4770)                # cb: ldr r0, [r0, #16]; bx lr
-    struct.pack_into("<3I", code, 0x20, 0xE2800004, 0xE28FC001 + 4, 0xE12FFF1C)  # add r0, #4; add ip, pc, #5; bx ip
-    struct.pack_into("<2H", code, 0x30, 0x3001, 0x4770)                # body: adds r0, #1; bx lr
-    img = Image(bytes(code), base, 0x40)
-    an = Analyzer(img)
-    entries = {setup: "thumb", thunk: "arm"}
-    first = an.analyze_all(entries)
-    assert first.get(body) is not None and first[body].mode == "thumb"
-    assert recompile.pc_relative_sums(first) == {cb + 1}
-    cover, fall_into = recompile.code_cover(first)
-    known = {a: f.mode for a, f in first.items()}
-    found = recompile.data_pointer_entries(img, an, [], known, cover, fall_into, recompile.pc_relative_sums(first))
-    assert found == {cb: "thumb"}
-
-
 def test_code_cave_runs_like_the_patched_code(tmp_path):
     """A community code mod's "code cave": two instructions of the code patched to branch
     into new code in the padding after it (the rest of the code's last page), one with a BL
@@ -566,66 +482,3 @@ def test_code_cave_runs_like_the_patched_code(tmp_path):
     res = recompile.recompile(Image(bytes(page), base, 0x20), {base: "arm", base + 0x10: "arm"},
                               str(tmp_path / "plain"), log=lambda *a: None)
     assert base + 0x800 not in res["funcs"] and res["report"]["trap_instructions"] == 1
-
-
-def test_indirect_call_to_one_leaves_through_rc_call(tmp_path):
-    """RC_ICALL's empty inline cache holds target 1 (Thumb address 0). A guest call to 1 (a
-    garbage function pointer: MH3U's gametest found one through a random vtable) must go to
-    rc_call like any miss, not to an empty host function pointer (a host fault at 0)."""
-    import random
-    import struct
-
-    import recompile
-    from recomp import build as rbuild
-    from recomp.analysis import Image
-    from recomp.gametest import (
-        BUF_BASE,
-        BUF_SIZE,
-        STACK_SIZE,
-        STACK_TOP,
-        TLS,
-        Tester,
-        random_state,
-    )
-    from recomp.harness.machines import ST_NOFUNC, Region
-
-    base = 0x00100000
-    words = [0xE92D4010, 0xE12FFF30, 0xE8BD8010]       # push {r4, lr}; blx r0; pop {r4, pc}
-    code = struct.pack(f"<{len(words)}I", *words).ljust(0x1000, b"\0")
-    out = tmp_path / "recomp"
-    res = recompile.recompile(Image(code, base, 4 * len(words)), {base: "arm"}, str(out), log=lambda *a: None)
-    assert not res["problems"], res["problems"]
-    lib = rbuild.build(str(out), 2, "O1", ["RC_CHECK_RETURNS"], "icall.so", [rbuild.HARNESS])
-    size = 0x10000
-    rw = [Region(base, size, True, code.ljust(size, b"\0")),
-          Region(STACK_TOP - STACK_SIZE, STACK_SIZE, True, bytes(STACK_SIZE)),
-          Region(BUF_BASE, BUF_SIZE, True, bytes(BUF_SIZE)),
-          Region(TLS, 0x1000, True, bytes(0x1000))]
-    tester = Tester(lib, [], rw, seed=5)
-    st = random_state(random.Random(1))
-    st.r[0] = 1
-    r = tester.nat.run(base, False, st, budget=10000)
-    assert (r.status, r.info0) == (ST_NOFUNC, 1), r
-
-
-def test_literals_of_data_pointer_functions_are_followed():
-    """A function that only a vtable reaches loads another code address from its literal
-    pool (MH3U's array constructors pass the element constructor to the array helper this
-    way). The first scan finds the vtable's function; its literal is found in a second round."""
-    import struct
-
-    import recompile
-    from recomp.analysis import Analyzer, Image
-    base = 0x00100000
-    code = bytearray(0x200)
-    a, f, g = base, base + 0x10, base + 0x20
-    struct.pack_into("<I", code, 0, 0xE12FFF1E)                                # a: bx lr
-    struct.pack_into("<4I", code, 0x10, 0xE59F1004, 0xE5801000, 0xE12FFF1E, g)  # f: ldr r1, =g; str r1, [r0]; bx lr
-    struct.pack_into("<2I", code, 0x20, 0xE3A00000, 0xE12FFF1E)                # g: mov r0, #0; bx lr
-    struct.pack_into("<I", code, 0x100, f)                                     # a vtable holding f
-    img = Image(bytes(code), base, 0x100)
-    an = Analyzer(img)
-    first = an.analyze_all({a: "arm"})
-    cover, fall_into = recompile.code_cover(first)
-    assert recompile.data_pointer_entries(img, an, [(base + 0x100, 4)], {a: "arm"}, cover, fall_into) == {f: "arm"}
-    assert recompile.data_pointer_closure(img, an, [(base + 0x100, 4)], first) == {f: "arm", g: "arm"}

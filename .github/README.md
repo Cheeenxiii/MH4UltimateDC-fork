@@ -24,6 +24,10 @@ The recompiler, runtime and registry fixes apply to MH4U too, and are meant to b
 - **`uc/main`** is this fork's line: upstream's `main` plus the additions above.
 - **`main`** mirrors upstream's `main`. Pull requests to upstream start from it.
 
+## Tests
+
+`tests/uc/run` runs the tests of this fork's additions: pytest for the Python tools, CMake and CTest for the plugin host. Upstream's own suite runs with `python3 -m pytest`, as upstream documents.
+
 ## Contributing
 
 Upstream's [CONTRIBUTING.md](../CONTRIBUTING.md) applies. In addition, this fork never edits upstream's code, docs or tests beyond what an addition strictly needs, so `uc/main` keeps rebasing cleanly. Logic specific to the mod belongs in the mod's repository.
