@@ -17,7 +17,6 @@ import argparse
 import collections
 import os
 import random
-import struct
 import sys
 import time
 
@@ -31,24 +30,8 @@ import recompile_module as RM  # noqa: E402
 from recomp import gametest as G  # noqa: E402
 from recomp.harness.machines import Region  # noqa: E402
 
-def patch_veneers(header: exh.ExHeader, code: bytes, crs: crolib.Cro, lds) -> bytes:
-    """code.bin with the static executable's imports from the modules filled in."""
-    out = bytearray(code)
-    for ld in [lds] if isinstance(lds, crolib.Loaded) else lds:
-        for tag, places in crolib.static_imports_of(crs, ld.cro.name):
-            target = ld.segment_bases[tag & 0xF] + (tag >> 4)
-            for at in places:
-                struct.pack_into("<I", out, code_offset(header, at), target)
-    return bytes(out)
-
-
-def code_offset(header: exh.ExHeader, addr: int) -> int:
-    """Offset in the loaded code (text | ro | data, each padded to pages) of an address."""
-    t, ro, d = header.text, header.ro, header.data
-    for seg, off in ((t, 0), (ro, t.padded_size), (d, t.padded_size + ro.padded_size)):
-        if seg.address <= addr < seg.address + seg.size:
-            return off + addr - seg.address
-    raise ValueError(f"0x{addr:08x} is in no segment")
+code_offset = RM.code_offset
+patch_veneers = RM.patch_veneers
 
 
 def module_regions(ld: crolib.Loaded) -> list[Region]:

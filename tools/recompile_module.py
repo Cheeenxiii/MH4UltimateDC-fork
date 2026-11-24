@@ -9,8 +9,10 @@ points (code pointers in its data, and what the static executable imports from i
 turned into C like any code. Its calls into the static executable or another module become
 direct branches to their addresses, which reach that code through rc_call.
 
-The output directory holds the modules' C, the static recompile's C (linked, not copied),
-one function table for all of it, and `modules.tsv` (each module's base), so
+The static executable is recompiled with them, from code.bin with its own veneers into the
+modules filled in as the loader leaves them (a recompile of code.bin as shipped folds them
+into jumps to the loader's placeholder). The output directory holds the modules' C, that
+static C, one function table for all of it, and `modules.tsv` (each module's base), so
 `recomp.build` makes a single library and `recomp.modtest` can test the modules' functions
 against the original in Unicorn with the same layout.
 
@@ -21,8 +23,8 @@ Static functions only modules call are invisible to a recompile of code.bin alon
 second form lists every module's imports from the static code, for the game's
 config/games/<game>/extra_entries.txt (addresses only), which recompile.py --game reads.
 
-usage: recompile_module.py --crs static.crs --static-build build/recomp-mhxx [--base 0x02000000]
-                           -o build/recomp-mhxx-modules <romfs>/*.cro
+usage: recompile_module.py --game mhxx --exheader exheader.bin --code code.bin --crs static.crs
+                           [--base 0x02000000] -o build/recomp-mhxx-modules <romfs>/*.cro
        recompile_module.py --static-entries extra_entries.txt --crs static.crs <romfs>/*.cro
 """
 from __future__ import annotations
@@ -84,24 +86,95 @@ def load_all(crs: crolib.Cro, paths: list[str], base: int = DEFAULT_BASE) -> lis
             ld = crolib.load(f.read(), base, static_segs)
         lds.append(ld)
         base = (base + len(ld.image) + 0xFFFF) & ~0xFFFF
-    by_name = {ld.cro.name: ld for ld in lds}
     out = []
     for ld in lds:
         img = bytearray(ld.image)
-        for im in ld.cro.import_modules():
-            src = by_name.get(im.name)
-            if src is None:              # the static executable ("|static|"), or not loaded
-                continue
-            exports = src.cro._rows("indexed_exports", "<I")
-            pairs = [(tag, head) for tag, head in im.anonymous] + \
-                    [(exports[i][0], head) for i, head in im.indexed if i < len(exports)]
-            for tag, head in pairs:
-                sym = src.segment_bases[tag & 0xF] + (tag >> 4)
-                for p in ld.cro.patch_list(head):
-                    at = ld.segment_bases[p.target & 0xF] + (p.target >> 4) - ld.base
-                    crolib.apply_patch(img, at, ld.base + at, p.type, sym, p.addend)
+        for _, sym, at, p in cross_imports(ld, lds):
+            crolib.apply_patch(img, at, ld.base + at, p.type, sym, p.addend)
         out.append(dataclasses.replace(ld, image=bytes(img)))
     return out
+
+
+def cross_imports(ld: crolib.Loaded, lds: list[crolib.Loaded]):
+    """`ld`'s imports from the other loaded modules: (module, address, image offset, patch)."""
+    by_name = {x.cro.name: x for x in lds}
+    for im in ld.cro.import_modules():
+        src = by_name.get(im.name)
+        if src is None:                  # the static executable ("|static|"), or not loaded
+            continue
+        exports = src.cro._rows("indexed_exports", "<I")
+        pairs = [(tag, head) for tag, head in im.anonymous] + \
+                [(exports[i][0], head) for i, head in im.indexed if i < len(exports)]
+        for tag, head in pairs:
+            sym = src.segment_bases[tag & 0xF] + (tag >> 4)
+            for p in ld.cro.patch_list(head):
+                yield src.cro.name, sym, ld.segment_bases[p.target & 0xF] + (p.target >> 4) - ld.base, p
+
+
+def module_entries(ld: crolib.Loaded, crs: crolib.Cro, lds: list[crolib.Loaded]) -> dict[int, str]:
+    """cro.entry_points, plus what other modules import from this one; an entry that is a
+    veneer is ARM code whatever its pointer's bit 0 says."""
+    entries = crolib.entry_points(ld, crs)
+    lo, hi = ld.text
+    for other in lds:
+        if other is ld:
+            continue
+        for name, sym, _, _ in cross_imports(other, lds):
+            if name == ld.cro.name and lo <= sym & ~1 < hi:
+                entries.setdefault(sym & ~1, "thumb" if sym & 1 else "arm")
+    for a in entries:
+        off = a - ld.base
+        if not off & 3 and struct.unpack_from("<I", ld.image, off)[0] == VENEER:
+            entries[a] = "arm"
+    return entries
+
+
+def code_offset(header, addr: int) -> int:
+    """Offset in the loaded code (text | ro | data, each padded to pages) of an address."""
+    t, ro, d = header.text, header.ro, header.data
+    for seg, off in ((t, 0), (ro, t.padded_size), (d, t.padded_size + ro.padded_size)):
+        if seg.address <= addr < seg.address + seg.size:
+            return off + addr - seg.address
+    raise ValueError(f"0x{addr:08x} is in no segment")
+
+
+def patch_veneers(header, code: bytes, crs: crolib.Cro, lds) -> bytes:
+    """code.bin with the static executable's imports from the modules filled in."""
+    out = bytearray(code)
+    for ld in [lds] if isinstance(lds, crolib.Loaded) else lds:
+        for tag, places in crolib.static_imports_of(crs, ld.cro.name):
+            target = ld.segment_bases[tag & 0xF] + (tag >> 4)
+            for at in places:
+                struct.pack_into("<I", out, code_offset(header, at), target)
+    return bytes(out)
+
+
+def recompile_static(game: str, exheader: str, code_path: str, crs: crolib.Cro, lds, out: str) -> dict:
+    """The game's static recompile (its tables, as recompile.py --game uses them), from
+    code.bin with its veneers into `lds` filled in; a veneer's jump into a module is a
+    tail call (ModuleAnalyzer)."""
+    import codebin2elf
+    import exheader as exh
+    ns = argparse.Namespace(game=game, exheader=exheader, code=code_path, functions=None, extra=None,
+                            hooks=None, tunables=None, out=None)
+    cfg = R.resolve_args(ns)
+    with open(exheader, "rb") as f:
+        raw = f.read()
+    header = exh.parse(raw)
+    with open(code_path, "rb") as f:
+        code = codebin2elf.load_code(header, f.read())
+    if cfg:
+        R.check_game_code(cfg, code)               # the shipped code is the one the tables fit
+    code = patch_veneers(header, code, crs, lds)
+    img = Image(code, header.text.address, R.code_size(header, code))
+    segs = [(header.ro.address, header.ro.size), (header.data.address, header.data.size)]
+    analyzer = type("BoundModuleAnalyzer", (ModuleAnalyzer,), {"outside": tuple(ld.text for ld in lds)})
+    saved, R.Analyzer = R.Analyzer, analyzer
+    try:
+        return R.recompile(img, R.load_entries(ns.functions, ns.extra), out, data_segments=segs,
+                           title_id=struct.unpack_from("<Q", raw, 0x200)[0])
+    finally:
+        R.Analyzer = saved
 
 
 def read_layout(path: str) -> list[tuple[str, int]]:
@@ -218,7 +291,9 @@ def write_static_entries(path: str, entries: dict[int, str], modules: int) -> No
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--crs", required=True, help="the game's static.crs")
-    ap.add_argument("--static-build", help="the static executable's recompile (tools/recompile.py -o)")
+    ap.add_argument("--game", default="mhxx", help="the reference game in config/games/ the modules belong to")
+    ap.add_argument("--exheader", help="the game's exheader.bin")
+    ap.add_argument("--code", help="the game's code.bin")
     ap.add_argument("--base", type=lambda s: int(s, 0), default=DEFAULT_BASE, help="where the first module goes")
     ap.add_argument("-o", "--out")
     ap.add_argument("--static-entries", metavar="OUT", help="list the modules' static imports instead")
@@ -231,14 +306,16 @@ def main(argv: list[str] | None = None) -> int:
         write_static_entries(args.static_entries, entries, len(args.modules))
         print(f"{len(entries)} static functions imported by {len(args.modules)} modules -> {args.static_entries}")
         return 0
-    if not (args.static_build and args.out):
-        ap.error("--static-build and -o are needed to recompile modules")
+    if not (args.exheader and args.code and args.out):
+        ap.error("--exheader, --code and -o are needed to recompile modules")
     lds = load_all(crs, args.modules, args.base)
+    res = recompile_static(args.game, args.exheader, args.code, crs, lds, os.path.join(args.out, "static"))
+    print(f"static code, veneers into the modules filled in: {res['report']['functions']} functions")
     texts = [static_text(crs)] + [ld.text for ld in lds]
     srcs, total = [], 0
     for ld in lds:
         out = os.path.join(args.out, "modules", ld.cro.name)
-        res = recompile_module(module_image(ld), crolib.entry_points(ld, crs), out,
+        res = recompile_module(module_image(ld), module_entries(ld, crs, lds), out,
                                [t for t in texts if t != ld.text], ld.data_segments())
         rep = res["report"]
         total += rep["functions"]
@@ -250,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
         f.writelines(f"{ld.cro.name}\t0x{ld.base:08x}\n" for ld in lds)
     print(f"{len(lds)} modules from 0x{args.base:08x} to 0x{lds[-1].base + len(lds[-1].image):08x}: "
           f"{total} functions")
-    n = merge(os.path.join(args.static_build, "src"), srcs, os.path.join(args.out, "src"))
+    n = merge(os.path.join(args.out, "static", "src"), srcs, os.path.join(args.out, "src"))
     print(f"merged table: {n} functions -> {os.path.join(args.out, 'src')}")
     return 0
 

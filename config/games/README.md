@@ -67,7 +67,24 @@ python3 tools/cro.py info <romfs>/modules_MasterRelease/roEm001.cro
 python3 tools/cro.py imports roEm001.cro --crs static.crs        # the static addresses it imports
 ```
 
-`roEm001.cro` (Rathian): code 0x21c14 bytes, 392 imports from static (330 functions, 22 data, the rest veneers sharing a target), 1,271 relocations. The analyser finds 265 functions and 32,700 instructions in it with no problems. Recompiling modules, and linking them to the static library at run time, is not done yet.
+`roEm001.cro` (Rathian): code 0x21c14 bytes, 392 imports from static (330 functions, 22 data, the rest veneers sharing a target), 1,271 relocations. The analyser finds 265 functions in it with no problems.
+
+### Recompiling the modules
+
+`tools/recompile_module.py` places the modules one after another from a fixed base (0x02000000 by default, each at a 64 KiB boundary) and loads each as the system's loader would: its relocations, its imports from the static executable, and its imports from other modules (17 of the 126 import tables point at another module: 14 at `roOtomo`, one each at `roEm008`, `roEm076`, `roEm084` and `roEm087`). Each module is recompiled like any code. A branch into the static code or another module, through a veneer, becomes a call through `rc_call`, not a bad jump. The static code is recompiled with them, from `code.bin` with its own veneers into the modules filled in: a recompile of `code.bin` as shipped folds those veneers into jumps to the loader's placeholder, which ends in `svcBreak`. The output holds the modules' C, that static C and one function table for both, so one library has it all. `modules.tsv` records each module's base: the C folds literal pools into constants, so it runs a module only at the base it was recompiled for.
+
+`recomp.modtest` is gametest for the modules: both machines get the static code (its veneers into the modules filled in) and every module at its base, and each module function runs from the same random states in both.
+
+```
+python3 tools/recompile_module.py --static-entries config/games/mhxx/extra_entries.txt --crs static.crs <romfs>/modules_MasterRelease/*.cro
+python3 tools/recompile_module.py --game mhxx --exheader ... --code ... --crs static.crs -o build/recomp-mhxx-modules <romfs>/modules_MasterRelease/*.cro
+cd tools && python3 -m recomp.build ../build/recomp-mhxx-modules --harness --opt O0 -D RC_CHECK_RETURNS -o game.so
+python3 -m recomp.modtest --build ../build/recomp-mhxx-modules --exheader ... --code ... --crs static.crs <romfs>/modules_MasterRelease/*.cro
+```
+
+The first command matters for the static recompile too: 4,256 static functions are branched to from modules, and 956 of them aren't in MHXX's function table, because only modules call them. `config/games/mhxx/extra_entries.txt` lists them all (addresses only), and `recompile.py --game mhxx` (and `recompile_module.py`) reads it: the static recompile goes from 63,087 to 63,892 functions. Only imports a module branches to count (a veneer's word or a branch relocation); the others are data, some of it in the static `.text`. Nine of those branch targets (from `roEm003`, `roEm069`, `roEm070`, `roEms045` and `roOtomo`) sit inside a known Thumb function and are reached in ARM state, most likely through veneers that never run: the recompile traps there, where the game would run garbage.
+
+All 109 modules (36,662 functions, 4 random cases each; last full run before the three fixes below): 20,746 pass, 15,697 fault the same way in both, 179 inconclusive, and none differ in state, memory or exit. 40 functions are left: 29 reach a module function missing from the table, 8 trap in static veneers into modules, 2 make Unicorn hit an undefined instruction, 1 returns to a wild address. Fixed after that run, with unit tests but not yet a full rerun: functions other modules import are now entry points, a veneer entry is always ARM, and the static code's patched veneers are tail calls. `roEm001` alone, in an earlier run: 289 pass, 160 shared faults, 0 differ.
 
 ## Class vtables
 

@@ -160,3 +160,34 @@ def test_layout_round_trip(tmp_path):
     p = tmp_path / "modules.tsv"
     p.write_text("# module\tbase\nroEm001\t0x02000000\nroEm003\t0x02030000\n")
     assert RM.read_layout(str(p)) == [("roEm001", 0x02000000), ("roEm003", 0x02030000)]
+
+
+def test_recompile_static_uses_the_patched_code(tmp_path, monkeypatch):
+    blob, crs = module_and_crs()
+    segs = cro.static_segments(crs)
+    ld = cro.load(blob, BASE, segs)
+    header = SimpleNamespace(text=seg(segs[0], 0x100, 0x1000), ro=seg(segs[1], 0x10, 0x1000),
+                             data=seg(segs[2], 0x10, 0x1000))
+    exheader = tmp_path / "exheader.bin"
+    exheader.write_bytes(bytes(0x200) + struct.pack("<Q", 0x0004000000197100))
+    code = tmp_path / "code.bin"
+    code.write_bytes(bytes(0x3000))
+    import codebin2elf
+    import exheader as exh
+    monkeypatch.setattr(exh, "parse", lambda raw: header)
+    monkeypatch.setattr(codebin2elf, "load_code", lambda h, data: data)
+
+    def resolve(ns):
+        ns.functions, ns.extra = "unused.tsv", []
+        return None
+    monkeypatch.setattr(RM.R, "resolve_args", resolve)
+    monkeypatch.setattr(RM.R, "load_entries", lambda functions, extra: {segs[0]: "arm"})
+    seen = {}
+
+    def fake_recompile(img, entries, out, data_segments=None, title_id=0):
+        seen.update(img=img, title_id=title_id, out=out)
+        return {"report": {"functions": 1}}
+    monkeypatch.setattr(RM.R, "recompile", fake_recompile)
+    RM.recompile_static("mhxx", str(exheader), str(code), crs, [ld], str(tmp_path / "static"))
+    assert struct.unpack_from("<I", seen["img"].code, 0x40)[0] == ld.segment_bases[0]
+    assert seen["title_id"] == 0x0004000000197100
