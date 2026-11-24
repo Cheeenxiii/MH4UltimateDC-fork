@@ -191,3 +191,17 @@ def test_recompile_static_uses_the_patched_code(tmp_path, monkeypatch):
     RM.recompile_static("mhxx", str(exheader), str(code), crs, [ld], str(tmp_path / "static"))
     assert struct.unpack_from("<I", seen["img"].code, 0x40)[0] == ld.segment_bases[0]
     assert seen["title_id"] == 0x0004000000197100
+
+
+def test_pointers_into_veneers_are_not_entries():
+    # text: a veneer (ldr pc, [pc, #-4]; .word) then f (bx lr). .data points at f, at the
+    # veneer's address word, and inside the veneer with bit 0 set (as a Thumb pointer).
+    text = struct.pack("<3I", 0xE51FF004, 0x00123456, 0xE12FFF1E)
+    blob = build(text=text, data=b"\0" * 12,
+                 relocs=[(tag(2, 0), cro.R_ARM_ABS32, 0, 8), (tag(2, 4), cro.R_ARM_ABS32, 0, 4),
+                         (tag(2, 8), cro.R_ARM_ABS32, 0, 3)])
+    crs = cro.Cro(build(name="|static|", text=b"\0" * 0x100))
+    ld = cro.load(blob, BASE, cro.static_segments(crs))
+    t = ld.text[0]
+    assert set(cro.entry_points(ld)) == {t + 8, t + 4, t + 2}     # what the data says
+    assert RM.module_entries(ld, crs, [ld]) == {t + 8: "arm"}

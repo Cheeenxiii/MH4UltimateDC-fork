@@ -113,7 +113,8 @@ def cross_imports(ld: crolib.Loaded, lds: list[crolib.Loaded]):
 
 def module_entries(ld: crolib.Loaded, crs: crolib.Cro, lds: list[crolib.Loaded]) -> dict[int, str]:
     """cro.entry_points, plus what other modules import from this one; an entry that is a
-    veneer is ARM code whatever its pointer's bit 0 says."""
+    veneer is ARM code whatever its pointer's bit 0 says, and a pointer into a veneer (its
+    address word, or past its start) is data, not an entry."""
     entries = crolib.entry_points(ld, crs)
     lo, hi = ld.text
     for other in lds:
@@ -122,9 +123,12 @@ def module_entries(ld: crolib.Loaded, crs: crolib.Cro, lds: list[crolib.Loaded])
         for name, sym, _, _ in cross_imports(other, lds):
             if name == ld.cro.name and lo <= sym & ~1 < hi:
                 entries.setdefault(sym & ~1, "thumb" if sym & 1 else "arm")
-    for a in entries:
-        off = a - ld.base
-        if not off & 3 and struct.unpack_from("<I", ld.image, off)[0] == VENEER:
+    word = lambda a: struct.unpack_from("<I", ld.image, a - ld.base)[0] if lo <= a < hi - 3 else None
+    for a in list(entries):
+        w0 = a & ~3
+        if word(w0 - 4) == VENEER or (word(w0) == VENEER and a != w0):
+            del entries[a]               # a data word pointing at a veneer's address word or inside it
+        elif a == w0 and word(a) == VENEER:
             entries[a] = "arm"
     return entries
 
