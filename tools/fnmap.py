@@ -19,8 +19,9 @@ design doc in the content repository has the numbers):
   4. similarity, on request: the best candidate by a 4-gram index and alignment ratio,
      accepted only when clear (ratio >= 0.7 and 0.1 ahead of the next), then 2 again.
 
-    side  --game mh4u|mh3u|mhxx [--module x.cro --crs static.crs] -o x.side
+    side  --game mh4u|mh3u|mhxx [--module x.cro --crs static.crs] [--entries FILE] -o x.side
     map   A.side B.side -o map.tsv [--vtables A.vt B.vt] [--similar ADDR_FILE]
+          [--module-side M.side] [--seed PAIRS]
 
 The .side files and the map hold addresses and hashes only, but they are derived from game
 code: keep them outside the repository.
@@ -111,6 +112,7 @@ class Fn:
     seq: array                                   # token ids (CRC-32 of each token)
     sites: list[tuple[int, int]] = field(default_factory=list)  # (token index, callee entry)
     external: list[int] = field(default_factory=list)  # targets outside this side (a CRO's static calls)
+    ext_sites: list[tuple[int, int]] = field(default_factory=list)  # the same, as (token index, target)
 
     @property
     def digest(self) -> str:
@@ -128,18 +130,19 @@ def make_fn(toks: list[tuple[str, int | None]], entry: int, owner, external=None
     `external(target)` may name the outside address a call target forwards to (a CRO veneer);
     it is asked first, since a veneer need not be an analysed function."""
     seq = array("I", (zlib.crc32(t.encode()) for t, _ in toks))
-    sites, ext = [], []
+    sites, ext, ext_sites = [], [], []
     for k, (t, target) in enumerate(toks):
         if target is None:
             continue
         x = external(target & ~1) if external else None
         if x is not None:
             ext.append(x)
+            ext_sites.append((k, x))
             continue
         o = owner(target)
         if o is not None and (t == "CALL" or o != entry):
             sites.append((k, o))
-    return Fn(seq, sites, ext)
+    return Fn(seq, sites, ext, ext_sites)
 
 
 def side_from_analysis(name: str, funcs: dict, img: bytes, base: int, external=None) -> Side:
@@ -164,7 +167,7 @@ def side_from_analysis(name: str, funcs: dict, img: bytes, base: int, external=N
 def save_side(side: Side, path: str) -> None:
     """Plain data only, so any script can load it (not just this one run as __main__)."""
     data = {"name": side.name,
-            "fns": {a: (f.seq.tobytes(), f.sites, f.external) for a, f in side.fns.items()}}
+            "fns": {a: (f.seq.tobytes(), f.sites, f.external, f.ext_sites) for a, f in side.fns.items()}}
     with open(path, "wb") as fh:
         pickle.dump(data, fh, protocol=4)
 
@@ -173,11 +176,45 @@ def load_side(path: str) -> Side:
     with open(path, "rb") as fh:
         data = pickle.load(fh)
     fns = {}
-    for a, (seq, sites, ext) in data["fns"].items():
+    for a, (seq, sites, ext, *rest) in data["fns"].items():   # sides saved before ext_sites have 3
         arr = array("I")
         arr.frombytes(seq)
-        fns[a] = Fn(arr, list(sites), list(ext))
+        fns[a] = Fn(arr, list(sites), list(ext), list(rest[0]) if rest else [])
     return Side(data["name"], fns)
+
+
+def merge_module(static: Side, module: Side) -> Side:
+    """One side for a game's static code and a CRO module loaded with it: the module's calls
+    into the static code (its veneers' targets) become call sites, so propagation from a
+    mapped module function reaches the static functions it imports."""
+    fns = dict(static.fns)
+    for a, f in module.fns.items():
+        sites = sorted(f.sites + [(k, x) for k, x in f.ext_sites if x in static.fns])
+        fns[a] = Fn(f.seq, sites, f.external, f.ext_sites)
+    return Side(f"{static.name}+{module.name}", fns)
+
+
+def read_entries(path: str) -> dict[int, str]:
+    """More function entries: one address per line (bit 0 set for Thumb), `#` comments."""
+    out = {}
+    with open(path) as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if line:
+                a = int(line.split()[0], 16)
+                out.setdefault(a & ~1, "thumb" if a & 1 else "arm")
+    return out
+
+
+def read_pairs(path: str) -> list[tuple[int, int]]:
+    """Seed pairs, one `A-address B-address` per line (a map's own format works)."""
+    out = []
+    with open(path) as f:
+        for line in f:
+            p = line.split()
+            if p and not line.startswith("#"):
+                out.append((int(p[0], 16), int(p[1], 16)))
+    return out
 
 
 # ── matching ─────────────────────────────────────────────────────────────────
@@ -427,7 +464,10 @@ def cmd_side(args) -> int:
             ld = crolib.load(f.read(), 0x02000000, crolib.static_segments(crs))
         lo, hi = ld.text
         img = Image(ld.image, ld.base, hi - ld.base)
-        funcs = _analyse(img, crolib.entry_points(ld, crs), ld.data_segments())
+        entries = crolib.entry_points(ld, crs)
+        for a, m in read_entries(args.entries).items() if args.entries else ():
+            entries.setdefault(a, m)
+        funcs = _analyse(img, entries, ld.data_segments())
 
         def veneer(t):                      # ldr pc, [pc, #-4]; .word static
             off = t - ld.base
@@ -450,6 +490,8 @@ def cmd_side(args) -> int:
             R.check_game_code(game, code)
         img = Image(code, header.text.address, R.code_size(header, code))
         entries = R.load_entries(ns.functions, ns.extra or [])
+        for a, m in read_entries(args.entries).items() if args.entries else ():
+            entries.setdefault(a, m)
         entries.update({a: m for a, m in R.init_array_entries(img).items() if a not in entries})
         entries = {a: m for a, m in entries.items() if img.in_text(a)}
         segs = [(header.ro.address, header.ro.size), (header.data.address, header.data.size)]
@@ -462,7 +504,15 @@ def cmd_side(args) -> int:
 
 def cmd_map(args) -> int:
     a, b = load_side(args.a), load_side(args.b)
+    if args.module_side:
+        b = merge_module(b, load_side(args.module_side))
     mp = Mapper(a, b)
+    if args.seed:
+        seeds = [(x, y) for x, y in read_pairs(args.seed) if x in a.fns and y in b.fns]
+        for x, y in seeds:
+            if x not in mp.m and y not in mp.r:
+                mp.add(x, y, "seed")
+        print(f"seeds: {len(seeds)}")
     print(f"anchors: {mp.anchors()}")
     if args.vtables:
         import mt_vtables
@@ -495,11 +545,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--code")
     p.add_argument("--module", help="a .cro module instead of code.bin")
     p.add_argument("--crs", help="the game's static.crs (with --module)")
+    p.add_argument("--entries", help="more function entries, one address per line (code only "
+                   "tail calls reach, such as a monster's action handlers)")
     p.add_argument("-o", "--output", required=True)
     p = sub.add_parser("map", help="map side A's functions to side B's")
     p.add_argument("a")
     p.add_argument("b")
     p.add_argument("--similar", help="file of side-A addresses to also match by similarity")
+    p.add_argument("--module-side", help="a CRO module's side, merged into B (B is its game's static side)")
+    p.add_argument("--seed", help="pairs known by other means (A B per line), added before anything else")
     p.add_argument("--vtables", nargs=2, metavar=("A.vt", "B.vt"),
                    help="mt_vtables.py output for each side: align the slots of same-named classes")
     p.add_argument("--class-pair", action="append", default=[], metavar="A=B",

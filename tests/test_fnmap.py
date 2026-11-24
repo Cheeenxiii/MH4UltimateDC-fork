@@ -191,3 +191,49 @@ def test_brackets_need_equal_gaps_and_some_likeness():
     mp.add(0x300, 0x3000, "identical")
     assert mp.brackets([([0x100, 0x200, 0x300], [0x1000, 0x2000, 0x2100, 0x3000])]) == 0  # gaps 1, 2
     assert mp.brackets([([0x100, 0x200, 0x300], [0x1000, 0x2000, 0x3000])]) == 0  # unlike bodies
+
+
+def test_external_sites_keep_their_position():
+    toks = [("CALL", 0x200), ("mov r,#", None), ("CALL", 0x300)]
+    f = fnmap.make_fn(toks, 0x100, {0x200: 0x200}.get, external={0x300: 0x00500000}.get)
+    assert f.ext_sites == [(2, 0x00500000)]
+
+
+def test_side_saved_before_ext_sites_still_loads(tmp_path):
+    import pickle
+    p = tmp_path / "old.side"
+    p.write_bytes(pickle.dumps({"name": "old", "fns": {1: (array("I", [3]).tobytes(), [], [0x500000])}}))
+    back = fnmap.load_side(str(p))
+    assert back.fns[1].external == [0x500000] and back.fns[1].ext_sites == []
+
+
+def test_merge_module_turns_static_calls_into_sites():
+    static = Side("s", {0x500000: fn(body(1)), 0x600000: fn(body(2))})
+    module = Side("m", {0x2000000: Fn(array("I", body(3)), [], [0x500000, 0x700000],
+                                      [(4, 0x500000), (9, 0x700000)])})
+    merged = fnmap.merge_module(static, module)
+    assert set(merged.fns) == {0x500000, 0x600000, 0x2000000}
+    assert merged.fns[0x2000000].sites == [(4, 0x500000)]       # 0x700000 isn't a static function
+
+
+def test_seed_pair_propagates_into_static_imports(tmp_path):
+    # A: handler h calls engine e.  B: module handler h' calls static e' through a veneer.
+    e_body, h_body = body(10), body(11)
+    a = Side("a", {0x100: fn(h_body, [(5, 0x900)]), 0x900: fn(e_body)})
+    static = Side("b", {0x500000: fn(mutate(e_body, 1)), 0x600000: fn(body(12))})
+    module = Side("m", {0x2000000: Fn(array("I", mutate(h_body, 2)), [], [0x500000], [(5, 0x500000)])})
+    for side, name in ((a, "a"), (static, "b"), (module, "m")):
+        fnmap.save_side(side, str(tmp_path / f"{name}.side"))
+    (tmp_path / "seed.tsv").write_text("# a\tb\n0x100\t0x2000000\taction\n")
+    out = tmp_path / "map.tsv"
+    assert fnmap.main(["map", str(tmp_path / "a.side"), str(tmp_path / "b.side"),
+                       "--module-side", str(tmp_path / "m.side"), "--seed", str(tmp_path / "seed.tsv"),
+                       "-o", str(out)]) == 0
+    rows = {l.split("\t")[0]: l.split("\t")[1] for l in out.read_text().splitlines()[1:]}
+    assert rows["0x00000100"] == "0x02000000" and rows["0x00000900"] == "0x00500000"
+
+
+def test_read_entries(tmp_path):
+    p = tmp_path / "e.txt"
+    p.write_text("# handlers\n0x02001000\n0x02002001  # thumb\n")
+    assert fnmap.read_entries(str(p)) == {0x02001000: "arm", 0x02002000: "thumb"}
