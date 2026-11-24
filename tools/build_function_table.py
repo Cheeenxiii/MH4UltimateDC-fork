@@ -14,9 +14,8 @@ usage: build_function_table.py --exheader exheader.bin --code code.bin \
            --functions functions.tsv [--symbols config/symbols.txt] \
            [--dti-ctor 0x005bfa94] [--text-only] -o config/functions.tsv
 
-Reference games (config/games/) pass --symbols "" (config/symbols.txt names MH4U's
-addresses) and --text-only (drops what Ghidra made a function outside .text, such as
-one-byte entries in .rodata).
+Other games pass --symbols "" (config/symbols.txt names MH4U's addresses) and --text-only
+(drops what Ghidra made a function outside .text, such as one-byte entries in .rodata).
 """
 from __future__ import annotations
 

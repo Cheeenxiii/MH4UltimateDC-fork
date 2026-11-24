@@ -8,8 +8,6 @@ cd tools && python3 -m recomp.build ../build/recomp --harness --opt O0 -D RC_CHE
 python3 -m recomp.gametest --sample 2000 --cases 3 --report ../build/recomp/sample.tsv
 ```
 
-Other MT Framework Mobile games with tables in `config/games/` (MH3U so far) are recompiled for study with `--game <name>`, which takes that folder's tables instead of `config/`'s; see [config/games/README.md](../config/games/README.md). Without `--game` the output doesn't change.
-
 ## Pipeline
 
 1. **Entry points.** `config/functions.tsv` (Ghidra plus the second discovery pass), extra lists (`--extra`), the static constructors in RVCT's relative init table, and code addresses found in `.rodata`/`.data` (vtables, callback tables) or loaded from literal pools (function pointers passed as arguments), including addresses built position-independently from a literal and the PC (`ldr rN, =off; add rN, pc`: MHXX installs callbacks this way). Numbers that merely look like code addresses are weeded out: the target must decode into clean code, must not be reached by falling through from the instruction before it, must not overlap code of the other instruction set, and Thumb targets must sit near known Thumb code. Entries outside `.text` are dropped. The scan is repeated over the literals of the functions it finds, until nothing new turns up: a function only a vtable reaches can load another code address (MH3U's array constructors pass their element constructor to the runtime's array helper from a literal; 3 such functions in MH3U, 4 in MHXX, none in MH4U).
