@@ -1,0 +1,21 @@
+# The tests of this fork's additions (tests/uc/run): pytest for the tools, CTest for the
+# native plugin host. Upstream's suite runs in ci.yml.
+name: Fork additions
+
+on:
+  push:
+    branches: [uc/main]
+  pull_request:
+    branches: [uc/main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y clang lld llvm cmake
+      - run: pip install -r requirements.txt
+      - run: tests/uc/run

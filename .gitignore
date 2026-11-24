@@ -10,11 +10,6 @@ exefs/
 *.cfa
 *.app
 *.ncch
-*.nsp
-*.nca
-*.nso
-*.npdm
-*.xci
 *.arc
 code.bin
 exheader.bin

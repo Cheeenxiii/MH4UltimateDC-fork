@@ -1,5 +1,5 @@
 /*
- * mh4u_plugin.h: the native plugin API of the MH4U port (docs/MODS.md, "Native plugins").
+ * mh4u_plugin.h: the native plugin API of the MH4U port (docs/PLUGINS.md).
  *
  * A mod may ship one native library (.dll, .so, .dylib) that the port loads with the game's
  * code library. Each plugin gets a host table of its own (pass it back as `self`). It exports
@@ -30,7 +30,7 @@
  * tools/plugin_sample/sample_plugin.c does).
  *
  * Native plugins run arbitrary code on the player's PC: the launcher is to warn before turning
- * one on, and the mod catalog to label them (docs/MODS.md).
+ * one on, and the mod catalog to label them (docs/PLUGINS.md).
  *
  * Licence: GPL-3.0-or-later, like the port.
  */

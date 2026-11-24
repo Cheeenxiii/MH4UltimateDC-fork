@@ -1,0 +1,9 @@
+#!/bin/sh
+# Runs the tests of this fork's additions: the Python tools (pytest) and the native plugin
+# host (CMake and CTest, no Azahar needed). Upstream's own suite is `python3 -m pytest tests`.
+set -e
+cd "$(dirname "$0")/../.."
+python3 -m pytest -q tests/uc
+cmake -S port/tests/plugins -B build/plugin-tests > /dev/null
+cmake --build build/plugin-tests -j 4 > /dev/null
+ctest --test-dir build/plugin-tests --output-on-failure

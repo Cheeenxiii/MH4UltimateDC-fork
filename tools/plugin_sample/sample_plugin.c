@@ -1,5 +1,5 @@
 /*
- * A sample native plugin (docs/MODS.md, "Native plugins"): it wraps one game function, and
+ * A sample native plugin (docs/PLUGINS.md): it wraps one game function, and
  * counts frames. Everything it does is set in its mod's config (mod.json "config", or the
  * player's config.ini in the mod's folder):
  *

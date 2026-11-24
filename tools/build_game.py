@@ -326,7 +326,7 @@ def mod_plugins(mods_dir: str, program_id: int, hooks: dict, android: bool = Fal
     try:
         hooks, lines = mod_hooks.merge(hooks, wanted, mod_hooks.known_names())
     except mod_hooks.HookError as e:
-        raise SystemExit(f"the enabled mods' hooks conflict (docs/MODS.md, Native plugins):\n{e}")
+        raise SystemExit(f"the enabled mods' hooks conflict (docs/PLUGINS.md):\n{e}")
     print("mods' hooks:")
     for line in lines:
         print(f"  {line}")
@@ -410,7 +410,7 @@ def main(argv=None) -> int:
             code = modded
 
     # the enabled mods' hooks join the hook points, and their native plugins are listed next to
-    # the library (tools/mod_hooks.py, docs/MODS.md "Native plugins")
+    # the library (tools/mod_hooks.py, docs/PLUGINS.md)
     hooks = recompile.load_hooks(args.hooks)
     plugins = []
     if mods_dir:

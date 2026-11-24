@@ -8,21 +8,18 @@ cd tools && python3 -m recomp.build ../build/recomp --harness --opt O0 -D RC_CHE
 python3 -m recomp.gametest --sample 2000 --cases 3 --report ../build/recomp/sample.tsv
 ```
 
-Other MT Framework Mobile games with tables in `config/games/` (MH3U so far) are recompiled for study with `--game <name>`, which takes that folder's tables instead of `config/`'s; see [config/games/README.md](../config/games/README.md). Without `--game` the output doesn't change.
-
 ## Pipeline
 
-1. **Entry points.** `config/functions.tsv` (Ghidra plus the second discovery pass), extra lists (`--extra`), the static constructors in RVCT's relative init table, and code addresses found in `.rodata`/`.data` (vtables, callback tables) or loaded from literal pools (function pointers passed as arguments), including addresses built position-independently from a literal and the PC (`ldr rN, =off; add rN, pc`: MHXX installs callbacks this way). Numbers that merely look like code addresses are weeded out: the target must decode into clean code, must not be reached by falling through from the instruction before it, must not overlap code of the other instruction set, and Thumb targets must sit near known Thumb code. Entries outside `.text` are dropped. The scan is repeated over the literals of the functions it finds, until nothing new turns up: a function only a vtable reaches can load another code address (MH3U's array constructors pass their element constructor to the runtime's array helper from a literal; 3 such functions in MH3U, 4 in MHXX, none in MH4U).
+1. **Entry points.** `config/functions.tsv` (Ghidra plus the second discovery pass), extra lists (`--extra`), the static constructors in RVCT's relative init table, and code addresses found in `.rodata`/`.data` (vtables, callback tables) or loaded from literal pools (function pointers passed as arguments). Numbers that merely look like code addresses are weeded out: the target must decode into clean code, must not be reached by falling through from the instruction before it, must not overlap code of the other instruction set, and Thumb targets must sit near known Thumb code. Entries outside `.text` are dropped.
 2. **Decoding** (`recomp/arm.py`, `recomp/thumb.py`). Each instruction becomes an `Insn`: a kind (plain op, branch, call, return, indirect jump, jump table, SVC, trap) and a list of C statements over the register file. Covered: ARMv6K (data processing, multiplies, saturating and parallel arithmetic, media instructions, LDREX/STREX family, CP15 TLS registers), VFPv2, Thumb-1. UNPREDICTABLE encodings become traps.
 3. **Function analysis** (`recomp/analysis.py`). Follows the control flow from each entry:
    - branches to another entry are tail calls, others are local labels;
    - jump tables: `add pc, pc, rI, lsl #2`, `ldr pc, [pc, rI, lsl #2]`, `adr` + `ldr pc, [rB, rI, lsl #2]`, with the bound found from the guarding `cmp` (or `and` + `subs` + `bhs`);
    - `mov lr, pc` / `add lr, pc, #n` followed by a jump are calls that return to that constant, and a conditional jump after it is a conditional call (the game's video decoder sets LR once, then picks a routine with `beq`/`bne` or a table jump);
    - offset tables (`ldr rX, [rB, rI, lsl #2]`, or `[rB, rI]` with the index already scaled, + `add pc, rX, rB`), with signed offsets (tables placed after the routines they reach) and unused zero slots;
-   - `add rX, pc, #a` (+ `add rX, rX, #b`) then `mov pc, rX`/`bx rX`: the constant target becomes a function too (the jump itself is still dispatched at run time); an odd target after `bx` is Thumb code (`add ip, pc, #1; bx ip`, an ARM thunk into Thumb: MH4U has 22, which add 4 functions the table lacked);
+   - `add rX, pc, #a` (+ `add rX, rX, #b`) then `mov pc, rX`/`bx rX`: the constant target becomes a function too (the jump itself is still dispatched at run time);
    - FPSCR vector length and stride are tracked through `vmsr`, so VFP short-vector code (LEN=3 in two audio mixers) is expanded per element;
    - RVCT floating-point helpers that read a descriptor word after their call site and continue at one of several places in the caller are handled as multi-return calls;
-   - RVCT's Thumb switch helper (`__ARM_common_switch8`, recognised by its six ARM instructions) is a multi-return call too: the `bl` is followed by a byte table (case count, then one entry per case and a default) and the helper continues at the chosen case. MHXX has it (37 call sites); MH4U and MH3U don't;
    - code that falls into a function of the other instruction set stops there (the call before it doesn't return);
    - every function knows its return address (LR at entry, or the caller's own when code runs into the next function without a call or tail-calls it), so a computed jump to it is a return (Thumb's `pop {r3}; bx r3`). Tail calls pass it on (`expect_next`), as LR can hold something else by then: the decoder's block routines are entered right after a `bl` and return by popping their caller's frame.
    New call targets are analysed too, until the set is closed.
@@ -61,7 +58,7 @@ The decision (from PR #64's review; on `main` from the release after 0.1.6): `ma
 
 ## Performance
 
-Generated functions keep guest registers and flags in local variables (so the C compiler can put them in host registers) and write them back to the `RCtx` only around calls, system calls, returns and yields. VFP arithmetic runs on the host FPU set up like FPSCR (rounding mode, flush-to-zero) and only NaN results take a slow path to get ARM's NaN. Indirect calls use a per-site inline cache; an empty cache holds target 1 (Thumb address 0, never a function) with a stub that passes it to `rc_call`, so a garbage pointer of 1 is dispatched like any other miss. Each basic block charges its instruction count to the cycle budget (Azahar's JIT uses a per-instruction cycle table; the totals come out close).
+Generated functions keep guest registers and flags in local variables (so the C compiler can put them in host registers) and write them back to the `RCtx` only around calls, system calls, returns and yields. VFP arithmetic runs on the host FPU set up like FPSCR (rounding mode, flush-to-zero) and only NaN results take a slow path to get ARM's NaN. Indirect calls use a per-site inline cache. Each basic block charges its instruction count to the cycle budget (Azahar's JIT uses a per-instruction cycle table; the totals come out close).
 
 On `port/tests/bench.c` under Azahar (same machine, same output), the recompiled code at `-O2` runs the integer, sorting, VFP and indirect-call phases 2-6x faster than Azahar's JIT, about 1.5x faster overall including the emulator's own per-frame work.
 
@@ -88,8 +85,8 @@ Random states can't reach everything (most game functions fault early on random 
 
 | | |
 |---|---|
-| Functions | 40,577 (8,131 found through data pointers) |
-| Instructions | 3,256,625 |
+| Functions | 40,566 (8,124 found through data pointers) |
+| Instructions | 3,256,600 |
 | Jump tables | 3,475, all resolved |
 | Traps | 1 (data after a call that never returns) |
 | Analysis problems | 0 |

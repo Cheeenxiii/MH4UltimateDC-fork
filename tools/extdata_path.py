@@ -5,9 +5,8 @@ The exheader's ARM11 local system capabilities start at 0x200 (program id first)
 +0x30, and its first field is the u64 extdata id (3dbrew, "NCCH/Extended Header", ARM11 Local System
 Capabilities > Storage Info). Azahar, like Citra, keeps SD extdata at
     <user>/sdmc/Nintendo 3DS/<32 zeros>/<32 zeros>/extdata/<id high, 8 hex>/<id low, 8 hex>/
-with the files the game sees under `user/` (an assumption taken from Citra's layout, to be checked in the app:
-docs/research/extdata.md). MH Ultimate Collection writes downloaded-quest and DLC Palico files there
-(its specs/extdata.md).
+with the files the game sees under `user/` (an assumption taken from Citra's layout, not yet checked in the
+app). Downloaded quests and DLC Palicos live there.
 
 Usage: extdata_path.py EXHEADER.bin [--user AZAHAR_USER_DIR]
 """

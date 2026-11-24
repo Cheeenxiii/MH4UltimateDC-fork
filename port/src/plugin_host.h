@@ -1,4 +1,4 @@
-// The native plugin host (include/mh4u_plugin.h, docs/MODS.md "Native plugins"): hook chains
+// The native plugin host (include/mh4u_plugin.h, docs/PLUGINS.md): hook chains
 // over the code library's hook points, and the host table each plugin gets. Kept free of
 // Azahar, like hook_address.h, so tests build it on its own (tests/test_plugin_host.py);
 // plugins.cpp gives it Azahar's library loading and log.
