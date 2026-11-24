@@ -27,7 +27,7 @@ These stop the build, all reported at once:
 - two names for one address;
 - a name the project doesn't know, given without an address.
 
-Two mods hooking the same function is not a conflict: they chain. Turning a plugin mod on or off, or changing its `hooks`, needs a rebuild.
+Two mods hooking the same function is not a conflict: they chain. Turning a plugin mod on or off, or changing its `hooks`, needs a rebuild. `tools/mods.py status` doesn't yet notice a plugin list older than the enabled mods.
 
 ## Run
 
