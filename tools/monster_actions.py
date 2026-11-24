@@ -195,13 +195,13 @@ def case(code: Code, a: int, depth: int = 0) -> dict:
                 return r
             v = code.veneer(t)
             args = {k: v_ for k in ("r1", "r2", "r3") if (v_ := regs.get(k)) is not None}
-            return dict(kind="tail", handler=v if v is not None else t, via_veneer=v is not None,
-                        args=args, calls=calls, cond=cond)
+            return {"kind": "tail", "handler": v if v is not None else t, "via_veneer": v is not None,
+                    "args": args, "calls": calls, "cond": cond}
         if (m.startswith("pop") and "pc" in i.op_str) or m == "bx":
-            return dict(kind="inline" if calls else "none", calls=calls, cond=cond)
+            return {"kind": "inline" if calls else "none", "calls": calls, "cond": cond}
         if m.startswith("ldr") and i.op_str.startswith("pc"):
-            return dict(kind="jump", calls=calls, cond=cond)
-    return dict(kind="long", calls=calls, cond=cond)
+            return {"kind": "jump", "calls": calls, "cond": cond}
+    return {"kind": "long", "calls": calls, "cond": cond}
 
 
 def category_function(code: Code, block: int) -> int | None:
@@ -247,7 +247,7 @@ def read_inventory(path: str) -> list[Action]:
                 continue
             p = line.rstrip("\n").split("\t")
             x = lambda s: int(s, 16) if s else None
-            args = dict((k, int(v)) for k, v in (kv.split("=") for kv in p[7].split(",") if kv))
+            args = {k: int(v) for k, v in (kv.split("=") for kv in p[7].split(",") if kv)}
             out.append(Action(int(p[0]), int(p[1]) if p[1] else None, x(p[2]), x(p[3]), p[4], x(p[5]),
                               p[6] == "1", args, [int(c, 16) for c in p[8].split(",") if c], p[9] == "1"))
     return out
