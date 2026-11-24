@@ -555,7 +555,7 @@ PLUGIN_PLATFORMS = ("windows", "linux", "macos", "android")
 
 
 def _read_plugin_fields(data: dict, out: dict, warnings: list[str]) -> None:
-    """mod.json's native plugin fields (docs/MODS.md, "Native plugins"): hooks (game functions
+    """mod.json's native plugin fields (docs/PLUGINS.md): hooks (game functions
     by name, or {"name", "address"} with the USA v1.3.0 address for one the project hasn't
     named), plugin (the library per platform, a path in the mod) and config (the plugin's
     default settings, text)."""

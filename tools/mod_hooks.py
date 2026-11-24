@@ -2,7 +2,7 @@
 """The enabled mods' hooks and native plugins, for a build of the code library.
 
 A mod's mod.json may list game functions it hooks (`hooks`) and ship a native library
-(`plugin`, per platform) with default settings (`config`): docs/MODS.md, "Native plugins".
+(`plugin`, per platform) with default settings (`config`): docs/PLUGINS.md.
 build_game.py merges the hooks into the build's hook points (config/hooks.txt), so that the
 code library has a hook point for each, and lists the plugins next to the library
 (<program id>.plugins.tsv), which the port reads when it loads the library

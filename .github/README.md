@@ -1,59 +1,32 @@
-# MH4UltimateDC · Ultimate Collection fork
+# MH4UltimateDC, Ultimate Collection fork
 
-The engine side of **[MH Ultimate Collection](https://github.com/Cheeenxiii/mh-ultimate-collection)**, a content mod that brings Monster Hunter 3 Ultimate's and Generations Ultimate's maps, monsters and systems, underwater combat included, into Monster Hunter 4 Ultimate.
+This is a fork of [CompaLarios18/MH4UltimateDC](https://github.com/CompaLarios18/MH4UltimateDC), the static-recompilation PC port of Monster Hunter 4 Ultimate. It adds what the content mod [MH Ultimate Collection](https://github.com/Cheeenxiii/mh-ultimate-collection) needs from the engine, and nothing else.
 
-This is a fork of **[CompaLarios18/MH4UltimateDC](https://github.com/CompaLarios18/MH4UltimateDC)**, the static-recompilation PC port of MH4U. Everything about playing the game itself (setup, multiplayer, mods, FAQ) is upstream's, and its docs apply here unchanged: start with [docs/PLAYING.md](../docs/PLAYING.md) or upstream's [README](../README.md).
+Everything about playing the game is upstream's, and its docs apply unchanged: start with [README.md](../README.md) and [docs/PLAYING.md](../docs/PLAYING.md).
 
-> **No game data, ever.** Like upstream, this fork holds no ROM, code, assets or keys, and nothing derived from them. Every tool works from your own dumps, on your machine.
+This fork, like upstream, contains no game data.
 
-## What this fork adds
+## What it adds
 
-| Feature | State | Where |
-|---|---|---|
-| **Native plugin API.** A mod can ship a `.dll`/`.so`/`.dylib` that hooks game functions by name, chained with the port's own hooks and other mods'. ABI 2 also allocates memory from the game's own heap | built and tested on synthetic code; in-game check pending | [`include/mh4u_plugin.h`](../include/mh4u_plugin.h), [`docs/MODS.md`](../docs/MODS.md) ("Native plugins"), [`tools/plugin_sample/`](../tools/plugin_sample/) |
-| **Reference recompiles.** MH3U (3DS) and MHXX v1.4 (3DS), recompiled with the same tools as MH4U, to study the code the mod carries over | MH3U: every function recompiled and gametested, 0 differ. MHXX: recompiled, and all 109 CRO modules recompiled and module-tested against the original (36,669 functions, none differ) | [`config/games/`](../config/games/README.md), `tools/recompile.py --game <name>`, `tools/recompile_module.py` |
-| **Recompiler patterns** found on those games: RVCT's Thumb switch helper, PC-relative callbacks, ARM-to-Thumb thunks, literals reached through data pointers | on `uc/main`; candidates for upstream | [`docs/RECOMPILER.md`](../docs/RECOMPILER.md) |
-| **Switch code extraction.** MHGU's program code from your own NSP (PFS0 → NCA → ExeFS → NSO), with your own keys; stdlib only, OpenSSL through `ctypes` when present | MHGU v1.4.0 extracted, every hash verified; it is 32-bit ARM, like the 3DS games | `tools/extract_nsp.py`, `tools/aes128.py` |
-| **Engine symbols** the mod needs: MT Framework's allocator table and default heap, MH4U's monster factory, and the per-monster tables with their bounds | on `uc/main` | `config/symbols.txt` |
+| Addition | Where |
+|---|---|
+| Native plugins: a mod's library hooks game functions by name, chained with the port's own hooks, and can allocate from the game's heap | [docs/PLUGINS.md](../docs/PLUGINS.md), `include/mh4u_plugin.h`, `port/src/plugin*`, `tools/mod_hooks.py` |
+| Recompiler fixes found on other MT Framework games: RVCT's Thumb switch helper, PC-relative callbacks, ARM-to-Thumb thunks, a deterministic analysis order | `tools/recomp/analysis.py`, `tools/recomp/emit.py`, `tools/recompile.py` |
+| A runtime fix: an indirect call to address 1 no longer reaches an empty inline cache | `tools/recomp/runtime/recomp.h` |
+| A class-registry fix: each initialiser is emulated from clean memory | `tools/mt_dti.py`, `config/mt_classes.tsv` |
+| Engine symbols: MT Framework's heap allocator, MH4U's monster factory and per-monster tables | `config/symbols.txt` |
+| The Extra Data folder of a game, read from its exheader | `tools/extdata_path.py` |
 
-Already merged upstream from this fork: the **European game** (EUR v1.1.0, from release 0.1.7) and the **touch-screen panel research**.
+The recompiler, runtime and registry fixes apply to MH4U too, and are meant to be offered upstream.
 
 ## Branches
 
-| Branch | What it is |
-|---|---|
-| [`uc/main`](https://github.com/Cheeenxiii/MH4UltimateDC-fork/tree/uc/main) | **This fork's line.** Upstream's `main` plus everything above. The mod builds against it |
-| [`main`](https://github.com/Cheeenxiii/MH4UltimateDC-fork/tree/main) | A mirror of upstream's `main`. Branches meant as pull requests to upstream start here |
-| `uc/<topic>` | Work in progress, merged into `uc/main` when done |
-| [`native`](https://github.com/Cheeenxiii/MH4UltimateDC-fork/tree/native) | Upstream's work towards a build with no Azahar, mirrored |
-
-The other branches are upstream's or older work, kept until someone checks they are merged.
-
-## Building
-
-The same as upstream ([docs/SETUP.md](../docs/SETUP.md), [docs/PLAYING.md](../docs/PLAYING.md)). On `uc/main`:
-
-```bash
-# MH4U's code library, with the enabled mods' hooks and plugins merged into the build
-python3 tools/build_game.py --dump "MH4U v1.3.0 update.cia" --install --fetch-compiler
-```
-
-```bash
-# a reference game, from your own dump extracted to <work> (config/games/README.md)
-python3 tools/recompile.py --game mh3u --exheader <work>/exheader.bin --code <work>/code.bin -o build/recomp-mh3u
-```
-
-```bash
-python3 -m pytest
-```
+- **`uc/main`** is this fork's line: upstream's `main` plus the additions above.
+- **`main`** mirrors upstream's `main`. Pull requests to upstream start from it.
 
 ## Contributing
 
-Upstream's [CONTRIBUTING.md](../CONTRIBUTING.md) applies. In addition:
-
-- Prefer new files to rewriting upstream's, and keep the plugin layer additive, so that `uc/main` keeps merging cleanly with upstream.
-- Small focused commits with one-sentence subjects; docs and tests in the same commit as the code.
-- Content work (formats, specs, converters, catalog) belongs in [mh-ultimate-collection](https://github.com/Cheeenxiii/mh-ultimate-collection), not here.
+Upstream's [CONTRIBUTING.md](../CONTRIBUTING.md) applies. In addition, this fork never edits upstream's code, docs or tests beyond what an addition strictly needs, so `uc/main` keeps rebasing cleanly. Logic specific to the mod belongs in the mod's repository.
 
 ## Licence
 

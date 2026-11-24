@@ -1,4 +1,4 @@
-// Native plugins of the enabled mods (include/mh4u_plugin.h, docs/MODS.md "Native plugins"),
+// Native plugins of the enabled mods (include/mh4u_plugin.h, docs/PLUGINS.md),
 // loaded with the game's code library. The rules live in plugin_host.h, which needs no Azahar.
 #pragma once
 
