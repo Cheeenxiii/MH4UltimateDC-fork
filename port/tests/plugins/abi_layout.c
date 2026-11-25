@@ -8,7 +8,7 @@
 #define PROGRAM_ID ((8 + 2 * P + 7) / 8 * 8)
 #define FN(i) (PROGRAM_ID + 8 + (i) * P)
 
-_Static_assert(MH4U_PLUGIN_ABI == 3, "a new ABI: add its members' offsets below");
+_Static_assert(MH4U_PLUGIN_ABI == 4, "a new ABI: add its members' offsets below");
 _Static_assert(offsetof(MH4UPluginHost, abi) == 0, "abi moved");
 _Static_assert(offsetof(MH4UPluginHost, size) == 4, "size moved");
 _Static_assert(offsetof(MH4UPluginHost, mod_name) == 8, "mod_name moved");
@@ -32,7 +32,8 @@ _Static_assert(offsetof(MH4UPluginHost, on_frame) == FN(14), "on_frame moved");
 _Static_assert(offsetof(MH4UPluginHost, alloc) == FN(15), "alloc moved (ABI 2)");
 _Static_assert(offsetof(MH4UPluginHost, free) == FN(16), "free moved (ABI 2)");
 _Static_assert(offsetof(MH4UPluginHost, call) == FN(17), "call moved (ABI 3)");
-_Static_assert(sizeof(MH4UPluginHost) == FN(18), "a member was added: raise MH4U_PLUGIN_ABI");
+_Static_assert(offsetof(MH4UPluginHost, call2) == FN(18), "call2 moved (ABI 4)");
+_Static_assert(sizeof(MH4UPluginHost) == FN(19), "a member was added: raise MH4U_PLUGIN_ABI");
 
 int main(void) {
     return 0;

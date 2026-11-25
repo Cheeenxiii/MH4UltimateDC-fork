@@ -269,6 +269,7 @@ private:
         t.alloc = &ApiAlloc;
         t.free = &ApiFree;
         t.call = &ApiCall;
+        t.call2 = &ApiCall2;
         // Hooks a failed init asked for are taken back: remember the chains as they were.
         std::map<u32, size_t> before;
         for (auto& [addr, chain] : chains_) {
@@ -411,32 +412,67 @@ private:
 
     // ── guest memory ──────────────────────────────────────────────────────────
 
-    /// Runs the guest function at `target` with r0-r2 = args, and returns its r0. Everything
-    /// the guest's caller can see (core and VFP registers, flags, the fall-through return)
-    /// is put back as it was; the call uses the guest's stack below its current sp.
-    u32 CallGuest(RCtx* ctx, u32 target, u32 a0, u32 a1, u32 a2) {
+    /// The guest's caller-visible state, put back when this leaves scope: the core registers,
+    /// the CPSR flags, fpscr and the VFP registers. The fall-through return is cleared for the
+    /// call and put back too.
+    struct GuestState {
+        RCtx* ctx;
         u32 regs[16];
-        std::memcpy(regs, ctx->r, sizeof regs);
-        const u32 flags[7] = {ctx->fn, ctx->fz, ctx->fc, ctx->fv, ctx->fq, ctx->ge, ctx->fpscr};
-        auto vfp = ctx->f;
-        const u32 expect_next = ctx->expect_next;
-        ctx->expect_next = 0;
+        u32 flags[7];
+        decltype(RCtx::f) vfp;
+        u32 expect_next;
+
+        explicit GuestState(RCtx* c)
+            : ctx(c),
+              flags{c->fn, c->fz, c->fc, c->fv, c->fq, c->ge, c->fpscr},
+              vfp(c->f),
+              expect_next(c->expect_next) {
+            std::memcpy(regs, c->r, sizeof regs);
+            ctx->expect_next = 0;
+        }
+        ~GuestState() {
+            std::memcpy(ctx->r, regs, sizeof regs);
+            ctx->fn = flags[0];
+            ctx->fz = flags[1];
+            ctx->fc = flags[2];
+            ctx->fv = flags[3];
+            ctx->fq = flags[4];
+            ctx->ge = flags[5];
+            ctx->fpscr = flags[6];
+            ctx->f = vfp;
+            ctx->expect_next = expect_next;
+        }
+    };
+
+    /// Runs the guest function at `target` with r0-r2 = a0, a1, a2, and returns its r0.
+    /// Everything the guest's caller can see (core and VFP registers, flags, the fall-through
+    /// return) is put back as it was; the call uses the guest's stack below its current sp.
+    u32 CallGuest(RCtx* ctx, u32 target, u32 a0, u32 a1, u32 a2) {
+        GuestState state(ctx);
         ctx->r[0] = a0;
         ctx->r[1] = a1;
         ctx->r[2] = a2;
-        ctx->r[14] = regs[14];   // a code address of the game's (only the interpreter reads it)
+        guest_call_(ctx, target);
+        return ctx->r[0];
+    }
+
+    /// Like CallGuest, but with the integer arguments r0-r3 and the float arguments s0 and s1:
+    /// call2's worker. `r0_r3` NULL means four zeroes, `s0_s1` NULL means 0.0f for both, and
+    /// `s0_out`, when set, gets the function's s0 (its float return). The guest's state is put
+    /// back as CallGuest does.
+    u32 CallGuestWithFloats(RCtx* ctx, u32 target, const u32* r0_r3, const float* s0_s1,
+                            float* s0_out) {
+        GuestState state(ctx);
+        for (unsigned i = 0; i < 4; i++) {
+            ctx->r[i] = r0_r3 ? r0_r3[i] : 0;
+        }
+        ctx->f.s[0] = s0_s1 ? s0_s1[0] : 0.0f;
+        ctx->f.s[1] = s0_s1 ? s0_s1[1] : 0.0f;
         guest_call_(ctx, target);
         const u32 result = ctx->r[0];
-        std::memcpy(ctx->r, regs, sizeof regs);
-        ctx->fn = flags[0];
-        ctx->fz = flags[1];
-        ctx->fc = flags[2];
-        ctx->fv = flags[3];
-        ctx->fq = flags[4];
-        ctx->ge = flags[5];
-        ctx->fpscr = flags[6];
-        ctx->f = vfp;
-        ctx->expect_next = expect_next;
+        if (s0_out) {
+            *s0_out = ctx->f.s[0];
+        }
         return result;
     }
 
@@ -492,6 +528,15 @@ private:
             return 0;
         }
         return h.CallGuest(call->ctx, addr, a0, a1, a2);
+    }
+
+    static u32 ApiCall2(MH4UCall* call, u32 addr, const u32* r0_r3, const float* s0_s1,
+                        float* s0_out) {
+        PluginHost& h = Get();
+        if (!call || !call->ctx || !addr || !h.guest_call_) {
+            return 0;
+        }
+        return h.CallGuestWithFloats(call->ctx, addr, r0_r3, s0_s1, s0_out);
     }
 
     RCodeInfo info_{};
