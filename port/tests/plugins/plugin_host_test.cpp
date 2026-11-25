@@ -22,8 +22,10 @@ namespace {
 constexpr u32 FRAME = 0x00100000, PAD = 0x00100100;   // hook points, sorted
 constexpr u32 TRACE = 0x100, ALLOCATED = 0x180, R4_AFTER = 0x184;
 constexpr u32 HEAP_TABLE = 0x2000, ALLOCATOR = 0x2100, VTABLE = 0x2200;
-constexpr u32 ALLOC_FN = 0x4000, FREE_FN = 0x4100, CALL_FN = 0x4200, BLOCK = 0x8000;
+constexpr u32 ALLOC_FN = 0x4000, FREE_FN = 0x4100, CALL_FN = 0x4200, CALL2_FN = 0x4300,
+               BLOCK = 0x8000;
 constexpr u32 CALL_RESULT = 0x190, CALL_R4 = 0x194;
+constexpr u32 CALL2_RESULT = 0x198, CALL2_FLOAT = 0x19c, CALL2_R4 = 0x1a0;
 
 u8 memory[0x10000];
 RCtx ctx;
@@ -47,6 +49,11 @@ u32 rd(u32 a) {
 }
 void wr(u32 a, u32 v) {
     std::memcpy(memory + a, &v, 4);
+}
+float rdf(u32 a) {
+    float v;
+    std::memcpy(&v, memory + a, 4);
+    return v;
 }
 void trace(char c) {
     const u32 n = rd(TRACE);
@@ -164,7 +171,8 @@ void hooking_a_missing_hook_point_fails_and_says_so() {
     CHECK(logged(log, "no hook point for sNowhere::run"), "the log doesn't name the missing hook point");
 }
 
-u32 alloc_args[3], call_args[3], freed;
+u32 alloc_args[3], call_args[3], call2_args[4], call2_fpscr, freed;
+float call2_floats[2];
 void guest(RCtx* c, u32 target) {
     if (target == ALLOC_FN) {
         std::memcpy(alloc_args, c->r, sizeof alloc_args);
@@ -174,6 +182,16 @@ void guest(RCtx* c, u32 target) {
     } else if (target == CALL_FN) {
         std::memcpy(call_args, c->r, sizeof call_args);
         c->r[0] = 0xC0DE;
+    } else if (target == CALL2_FN) {
+        std::memcpy(call2_args, c->r, sizeof call2_args);
+        call2_floats[0] = c->f.s[0];
+        call2_floats[1] = c->f.s[1];
+        call2_fpscr = c->fpscr;
+        c->r[0] = 0xCAFE;
+        c->f.s[0] = 3.5f;               // the float return
+        c->f.s[2] = 123.0f;             // VFP registers past the arguments are clobbered
+        c->fn = c->fz = c->fc = c->fv = c->fq = c->ge = 1;
+        c->fpscr = 0x03000000u;
     }
     c->r[4] = 0xDEAD;   // the game's allocator uses callee registers too
 }
@@ -205,6 +223,35 @@ void call_runs_a_game_function_and_restores_the_registers() {
     CHECK(rd(CALL_R4) == 0x4444, "r4 is %#x after call: the guest's registers weren't put back", rd(CALL_R4));
 }
 
+void call2_passes_r3_and_floats_and_restores_the_registers() {
+    start({{"A", PLUGIN_1, "/mods/a", {{"tag", "a"}, {"call2", "1"}}}});
+    PluginHost::Get().SetGuestHeap(HEAP_TABLE, guest);
+    ctx.r[4] = 0x4444;
+    ctx.f.s[2] = 9.5f;
+    ctx.fpscr = 0x01000000u;
+    run_pad();
+    CHECK(call2_args[0] == 0x11 && call2_args[1] == 0x22 && call2_args[2] == 0x33 &&
+              call2_args[3] == 0x44,
+          "call2 passed r0-r3 = %#x, %#x, %#x, %#x", call2_args[0], call2_args[1], call2_args[2],
+          call2_args[3]);
+    CHECK(call2_floats[0] == 1.5f && call2_floats[1] == 2.5f, "call2 passed s0=%f, s1=%f",
+          call2_floats[0], call2_floats[1]);
+    CHECK(call2_fpscr == 0x01000000u, "call2 saw fpscr %#x, not the hook's", call2_fpscr);
+    CHECK(rd(CALL2_RESULT) == 0xCAFE, "call2 returned %#x, not the game function's r0",
+          rd(CALL2_RESULT));
+    CHECK(rdf(CALL2_FLOAT) == 3.5f, "call2's float out is %f, not the game function's s0",
+          rdf(CALL2_FLOAT));
+    CHECK(rd(CALL2_R4) == 0x4444, "r4 is %#x after call2: the guest's registers weren't put back",
+          rd(CALL2_R4));
+    CHECK(ctx.f.s[2] == 9.5f, "s2 is %f after call2: the VFP registers weren't put back",
+          ctx.f.s[2]);
+    CHECK(ctx.fn == 0 && ctx.fz == 0 && ctx.fc == 0 && ctx.fv == 0 && ctx.fq == 0 &&
+              ctx.ge == 0,
+          "flags weren't put back: %u %u %u %u %u %u", ctx.fn, ctx.fz, ctx.fc, ctx.fv, ctx.fq,
+          ctx.ge);
+    CHECK(ctx.fpscr == 0x01000000u, "fpscr is %#x after call2, not the hook's", ctx.fpscr);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -216,6 +263,7 @@ int main(int argc, char** argv) {
         {"hooking_a_missing_hook_point_fails_and_says_so", hooking_a_missing_hook_point_fails_and_says_so},
         {"alloc_and_free_go_through_the_games_allocator", alloc_and_free_go_through_the_games_allocator},
         {"call_runs_a_game_function_and_restores_the_registers", call_runs_a_game_function_and_restores_the_registers},
+        {"call2_passes_r3_and_floats_and_restores_the_registers", call2_passes_r3_and_floats_and_restores_the_registers},
     };
     auto it = argc == 2 ? tests.find(argv[1]) : tests.end();
     if (it == tests.end()) {

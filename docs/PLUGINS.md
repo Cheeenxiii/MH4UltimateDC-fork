@@ -1,6 +1,6 @@
 # Native plugins
 
-A mod can hook the game's functions with native code: one library per platform, loaded by the port next to the game's code library. This page is the reference for the plugin API, `include/mh4u_plugin.h`, at ABI 3.
+A mod can hook the game's functions with native code: one library per platform, loaded by the port next to the game's code library. This page is the reference for the plugin API, `include/mh4u_plugin.h`, at ABI 4.
 
 ## mod.json
 
@@ -48,12 +48,15 @@ Each plugin gets its own `MH4UPluginHost` and passes it back as `self`. Members 
 | `guest_pointer(call, addr, size)` | a host pointer to a span inside one mapped page, or NULL |
 | `alloc(call, size, align)`, `free(call, addr)` | guest memory from the game's own default heap (ABI 2), from a hook or a frame call |
 | `call(call, addr, a0, a1, a2)` | runs the game function at `addr` with r0-r2, returns its r0 (ABI 3), from a hook or a frame call |
+| `call2(call, addr, r0_r3, s0_s1, s0_out)` | runs the game function at `addr` with r0-r3 and s0-s1, returns its r0 and, when `s0_out` is set, its float return in s0 (ABI 4) |
 | `on_frame(self, fn, user)` | runs once per engine frame, at `sMhMain::frame` |
 | `config(self, key)` | reads a setting |
 | `log(self, level, text)` | writes to the port's log |
 | `mod_name`, `mod_dir`, `program_id` | which mod, where, and which region's game |
 
 `call` is what lets a plugin implement behaviour the game doesn't have (a translated monster action) on top of the engine's own functions: a motion start, an effect, a shell. It puts the guest's registers and flags back afterwards, as `alloc` and `free` do, and uses the guest's stack below its current sp. It returns 0 for `addr` 0 or when the host can't run guest code yet; a plugin that may meet an ABI 2 host checks `host->abi` and `host->size` first.
+
+`call2` is `call` for the engine functions that take a fourth argument or a float. `r0_r3` holds r0 to r3, `s0_s1` holds s0 and s1, and either may be NULL for zeroes. When `s0_out` is not NULL it gets the function's s0, so a float return comes back through it. It puts the guest's core registers, VFP registers and flags back exactly as `call` does, and a plugin that may meet an ABI 3 host checks `host->abi` and `host->size` first.
 
 `alloc` and `free` call MT Framework's own allocator (`MtCtrHeapAllocator` "Heap", named in `config/symbols.txt`), so a plugin's blocks never collide with the game's. They return 0 when the heap is full, or when the game isn't MH4U.
 

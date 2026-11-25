@@ -36,6 +36,14 @@
  * afterwards, as alloc and free do. A plugin that should run on an ABI 2 host checks
  * host->abi and host->size before using it.
  *
+ * Calling with floats and r3: call2 (ABI 4) runs a game function with r0-r3 as its integer
+ * arguments, s0 and s1 as its float arguments, and returns its r0 plus, when asked, its s0
+ * (a float return). Several of the engine functions a translated 3U handler calls take a
+ * fourth argument, a float, or return one, and a plugin cannot write the guest's VFP
+ * registers itself. It puts the guest's registers, VFP registers and flags back afterwards,
+ * as call does. A plugin that should run on an ABI 3 host checks host->abi and host->size
+ * before using it.
+ *
  * Native plugins run arbitrary code on the player's PC: the launcher is to warn before turning
  * one on, and the mod catalog to label them (docs/PLUGINS.md).
  *
@@ -53,7 +61,7 @@ extern "C" {
 /* Raised when a function is added to the end of MH4UPluginHost (plugins check host->size
  * before using a newer member) or when a member's meaning changes (a plugin built for a
  * newer ABI than the host's refuses to start). */
-#define MH4U_PLUGIN_ABI 3   /* 2: alloc, free; 3: call */
+#define MH4U_PLUGIN_ABI 4   /* 2: alloc, free; 3: call; 4: call2 */
 #define MH4U_PLUGIN_INIT_SYMBOL "mh4u_plugin_init"
 
 #if defined(_WIN32)
@@ -132,6 +140,18 @@ typedef struct MH4UPluginHost {
      * call uses the guest's stack below its current sp. 0 when `addr` is 0 or the host can't
      * run guest code yet. From a hook or a frame call, on the emulation thread. */
     uint32_t (*call)(MH4UCall *call, uint32_t addr, uint32_t a0, uint32_t a1, uint32_t a2);
+
+    /* ── ABI 4 ── */
+
+    /* Runs the game function at `addr` (a code address of the game's) with r0-r3 =
+     * r0_r3[0..3] and s0, s1 = s0_s1[0..1], and returns its r0. `r0_r3` NULL means all
+     * zero; `s0_s1` NULL means 0.0f for both. When `s0_out` is not NULL it gets the
+     * function's s0, so a float return comes back through it. The guest's registers, VFP
+     * registers and flags are put back afterwards, as call does, and the call uses the
+     * guest's stack below its current sp. 0 when `addr` is 0 or the host can't run guest
+     * code yet. From a hook or a frame call, on the emulation thread. */
+    uint32_t (*call2)(MH4UCall *call, uint32_t addr, const uint32_t *r0_r3,
+                      const float *s0_s1, float *s0_out);
 } MH4UPluginHost;
 
 typedef int (*MH4UPluginInit)(const MH4UPluginHost *host, uint32_t abi);
