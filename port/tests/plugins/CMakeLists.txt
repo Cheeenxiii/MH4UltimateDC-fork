@@ -36,6 +36,7 @@ foreach(t chain_runs_last_mod_first_then_port_then_game
           failed_init_takes_its_hooks_back
           reset_gives_the_port_its_hooks_back
           hooking_a_missing_hook_point_fails_and_says_so
-          alloc_and_free_go_through_the_games_allocator)
+          alloc_and_free_go_through_the_games_allocator
+          call_runs_a_game_function_and_restores_the_registers)
     add_test(NAME ${t} COMMAND plugin_host_test ${t})
 endforeach()

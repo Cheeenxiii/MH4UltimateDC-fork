@@ -268,6 +268,7 @@ private:
         t.on_frame = &ApiOnFrame;
         t.alloc = &ApiAlloc;
         t.free = &ApiFree;
+        t.call = &ApiCall;
         // Hooks a failed init asked for are taken back: remember the chains as they were.
         std::map<u32, size_t> before;
         for (auto& [addr, chain] : chains_) {
@@ -483,6 +484,14 @@ private:
         if (call && call->ctx && addr && h.HeapFunction(call->ctx, FREE_VCALL, allocator, fn)) {
             h.CallGuest(call->ctx, fn, allocator, addr, 0);
         }
+    }
+
+    static u32 ApiCall(MH4UCall* call, u32 addr, u32 a0, u32 a1, u32 a2) {
+        PluginHost& h = Get();
+        if (!call || !call->ctx || !addr || !h.guest_call_) {
+            return 0;
+        }
+        return h.CallGuest(call->ctx, addr, a0, a1, a2);
     }
 
     RCodeInfo info_{};

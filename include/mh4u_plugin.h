@@ -29,6 +29,13 @@
  * that should also run on an ABI 1 host checks host->size before using them (as
  * tools/plugin_sample/sample_plugin.c does).
  *
+ * Calling the game: call (ABI 3) runs a game function by address with r0-r2 as arguments and
+ * returns its r0, from a hook or a frame call. It is what lets a plugin implement behaviour
+ * the game doesn't have (a translated monster action) on top of the engine's own functions
+ * (a motion start, an effect, a shell). The guest's registers and flags are put back
+ * afterwards, as alloc and free do. A plugin that should run on an ABI 2 host checks
+ * host->abi and host->size before using it.
+ *
  * Native plugins run arbitrary code on the player's PC: the launcher is to warn before turning
  * one on, and the mod catalog to label them (docs/PLUGINS.md).
  *
@@ -46,7 +53,7 @@ extern "C" {
 /* Raised when a function is added to the end of MH4UPluginHost (plugins check host->size
  * before using a newer member) or when a member's meaning changes (a plugin built for a
  * newer ABI than the host's refuses to start). */
-#define MH4U_PLUGIN_ABI 2   /* 2: alloc, free */
+#define MH4U_PLUGIN_ABI 3   /* 2: alloc, free; 3: call */
 #define MH4U_PLUGIN_INIT_SYMBOL "mh4u_plugin_init"
 
 #if defined(_WIN32)
@@ -117,6 +124,14 @@ typedef struct MH4UPluginHost {
     uint32_t (*alloc)(MH4UCall *call, uint32_t size, uint32_t align);
     /* Gives back a block from alloc (0 is ignored). */
     void (*free)(MH4UCall *call, uint32_t addr);
+
+    /* ── ABI 3 ── */
+
+    /* Runs the game function at `addr` (a code address of the game's) with r0-r2 = a0, a1,
+     * a2, and returns its r0; the guest's registers and flags are put back afterwards, and the
+     * call uses the guest's stack below its current sp. 0 when `addr` is 0 or the host can't
+     * run guest code yet. From a hook or a frame call, on the emulation thread. */
+    uint32_t (*call)(MH4UCall *call, uint32_t addr, uint32_t a0, uint32_t a1, uint32_t a2);
 } MH4UPluginHost;
 
 typedef int (*MH4UPluginInit)(const MH4UPluginHost *host, uint32_t abi);

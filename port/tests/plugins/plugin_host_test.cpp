@@ -22,7 +22,8 @@ namespace {
 constexpr u32 FRAME = 0x00100000, PAD = 0x00100100;   // hook points, sorted
 constexpr u32 TRACE = 0x100, ALLOCATED = 0x180, R4_AFTER = 0x184;
 constexpr u32 HEAP_TABLE = 0x2000, ALLOCATOR = 0x2100, VTABLE = 0x2200;
-constexpr u32 ALLOC_FN = 0x4000, FREE_FN = 0x4100, BLOCK = 0x8000;
+constexpr u32 ALLOC_FN = 0x4000, FREE_FN = 0x4100, CALL_FN = 0x4200, BLOCK = 0x8000;
+constexpr u32 CALL_RESULT = 0x190, CALL_R4 = 0x194;
 
 u8 memory[0x10000];
 RCtx ctx;
@@ -163,13 +164,16 @@ void hooking_a_missing_hook_point_fails_and_says_so() {
     CHECK(logged(log, "no hook point for sNowhere::run"), "the log doesn't name the missing hook point");
 }
 
-u32 alloc_args[3], freed;
+u32 alloc_args[3], call_args[3], freed;
 void guest(RCtx* c, u32 target) {
     if (target == ALLOC_FN) {
         std::memcpy(alloc_args, c->r, sizeof alloc_args);
         c->r[0] = BLOCK;
     } else if (target == FREE_FN) {
         freed = c->r[1];
+    } else if (target == CALL_FN) {
+        std::memcpy(call_args, c->r, sizeof call_args);
+        c->r[0] = 0xC0DE;
     }
     c->r[4] = 0xDEAD;   // the game's allocator uses callee registers too
 }
@@ -190,6 +194,17 @@ void alloc_and_free_go_through_the_games_allocator() {
     CHECK(rd(R4_AFTER) == 0x4444, "r4 is %#x after alloc: the guest's registers weren't put back", rd(R4_AFTER));
 }
 
+void call_runs_a_game_function_and_restores_the_registers() {
+    start({{"A", PLUGIN_1, "/mods/a", {{"tag", "a"}, {"call", "1"}}}});
+    PluginHost::Get().SetGuestHeap(HEAP_TABLE, guest);
+    ctx.r[4] = 0x4444;
+    run_pad();
+    CHECK(rd(CALL_RESULT) == 0xC0DE, "call returned %#x, not the game function's r0", rd(CALL_RESULT));
+    CHECK(call_args[0] == 0x11 && call_args[1] == 0x22 && call_args[2] == 0x33,
+          "call passed r0-r2 = %#x, %#x, %#x", call_args[0], call_args[1], call_args[2]);
+    CHECK(rd(CALL_R4) == 0x4444, "r4 is %#x after call: the guest's registers weren't put back", rd(CALL_R4));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -200,6 +215,7 @@ int main(int argc, char** argv) {
         {"reset_gives_the_port_its_hooks_back", reset_gives_the_port_its_hooks_back},
         {"hooking_a_missing_hook_point_fails_and_says_so", hooking_a_missing_hook_point_fails_and_says_so},
         {"alloc_and_free_go_through_the_games_allocator", alloc_and_free_go_through_the_games_allocator},
+        {"call_runs_a_game_function_and_restores_the_registers", call_runs_a_game_function_and_restores_the_registers},
     };
     auto it = argc == 2 ? tests.find(argv[1]) : tests.end();
     if (it == tests.end()) {
